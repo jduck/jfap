@@ -70,6 +70,7 @@ const char *dot11_subtypes[4][16] = {
 };
 
 u_int8_t g_bssid[ETH_ALEN];
+u_int8_t g_ssid[32];
 u_int8_t g_channel = DEFAULT_CHANNEL;
 
 
@@ -135,7 +136,6 @@ int main(int argc, char *argv[])
 {
 	char *argv0;
 	char iface[64] = { 0 };
-	char ssid[32] = { 0 };
 	int ret = 0, c, sock;
 	pcap_t *pch = NULL;
 
@@ -202,10 +202,10 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	strncpy(ssid, argv[0], sizeof(ssid) - 1);
+	strncpy((char *)g_ssid, argv[0], sizeof(g_ssid) - 1);
 
 	printf("[*] Starting access point with SSID \"%s\" via interface \"%s\"\n",
-			ssid, iface);
+			g_ssid, iface);
 
 	if (!start_pcap(&pch, iface))
 		return 1;
@@ -300,7 +300,7 @@ int main(int argc, char *argv[])
 						(ulong)diff.tv_sec, diff.tv_nsec,
 						(ulong)BEACON_INTERVAL * 1000000);
 #endif
-				if (!send_beacon(sock, ssid))
+				if (!send_beacon(sock))
 					break;
 				last_beacon = now;
 			}
@@ -420,14 +420,14 @@ int open_raw_socket(char *iface)
 /*
  * send a beacon frame to announce our network
  */
-int send_beacon(int sock, char *ssid)
+int send_beacon(int sock)
 {
-	char pkt[4096], *p;
+	char pkt[4096] = { 0 }, *p;
 	radiotap_t *prt;
 	dot11_frame_t *d11;
 	beacon_t *bc;
 	ie_t *ie;
-	u_int8_t ssid_len = strlen(ssid);
+	u_int8_t ssid_len = strlen((char *)g_ssid);
 
 	/* fill out the radio tap header */
 	prt = (radiotap_t *)pkt;
@@ -465,7 +465,7 @@ int send_beacon(int sock, char *ssid)
 	//ie->id = IEID_SSID;
 	ie->len = ssid_len;
 	p = (char *)(ie + 1);
-	memcpy(p, ssid, ssid_len);
+	memcpy(p, g_ssid, ssid_len);
 	p += ssid_len;
 
 	/* add the supported rate IE */
