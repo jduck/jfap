@@ -75,6 +75,9 @@ u_int8_t g_bssid[ETH_ALEN];
 u_int8_t g_ssid[32];
 u_int8_t g_channel = DEFAULT_CHANNEL;
 
+/* global options */
+int g_send_beacons = 0;
+
 
 struct ieee80211_radiotap_header {
 	u_int8_t it_version;     /* set to 0 */
@@ -126,6 +129,7 @@ void usage(char *argv0)
 {
 	fprintf(stderr, "usage: %s [options] <ssid>\n", argv0);
 	fprintf(stderr, "\nsupported options:\n\n"
+			"-b             send beacons regularly (default: off)\n"
 			"-c <channel>   use the specified channel (default: %d)\n"
 			"-i <interface> interface to use for monitoring/injection (default: mon0)\n"
 			, DEFAULT_CHANNEL
@@ -166,12 +170,16 @@ int main(int argc, char *argv[])
 
 	strcpy(iface, "mon0");
 
-	while ((c = getopt(argc, argv, "c:i:")) != -1) {
+	while ((c = getopt(argc, argv, "bc:i:")) != -1) {
 		switch (c) {
 			case '?':
 			case 'h':
 				usage(argv0);
 				return 1;
+
+			case 'b':
+				g_send_beacons = 1;
+				break;
 
 			case 'c':
 				{
@@ -344,37 +352,37 @@ int main(int argc, char *argv[])
 				}
 			}
 		} else {
-#ifdef SEND_BEACONS
-			/* we didn't get a pcket yet, do periodic processing */
-			struct timespec now, diff;
+			if (g_send_beacons) {
+				/* we didn't get a pcket yet, do periodic processing */
+				struct timespec now, diff;
 
-			if (clock_gettime(CLOCK_REALTIME, &now)) {
-				perror("[!] gettimeofday failed");
-				break;
-			}
-
-			/* see how long since the last beacon. if it's been long enough,
-			 * send another */
-			diff.tv_sec = now.tv_sec - last_beacon.tv_sec;
-			diff.tv_nsec = now.tv_nsec - last_beacon.tv_nsec;
-			if (diff.tv_nsec < 0) {
-				--diff.tv_sec;
-				diff.tv_nsec += 1000000000;
-			}
-			if (diff.tv_sec > 0 || diff.tv_nsec > BEACON_INTERVAL * 1000000) {
-#ifdef DEBUG_BEACON_INTERVAL
-				printf("%lu.%lu - %lu.%lu = %lu.%lu (vs %lu)\n",
-						(ulong)now.tv_sec, now.tv_nsec,
-						(ulong)last_beacon.tv_sec, last_beacon.tv_nsec,
-						(ulong)diff.tv_sec, diff.tv_nsec,
-						(ulong)BEACON_INTERVAL * 1000000);
-#endif
-				if (!send_beacon(sock))
+				if (clock_gettime(CLOCK_REALTIME, &now)) {
+					perror("[!] gettimeofday failed");
 					break;
-				last_beacon = now;
-			}
+				}
+
+				/* see how long since the last beacon. if it's been long enough,
+				 * send another */
+				diff.tv_sec = now.tv_sec - last_beacon.tv_sec;
+				diff.tv_nsec = now.tv_nsec - last_beacon.tv_nsec;
+				if (diff.tv_nsec < 0) {
+					--diff.tv_sec;
+					diff.tv_nsec += 1000000000;
+				}
+				if (diff.tv_sec > 0 || diff.tv_nsec > BEACON_INTERVAL * 1000000) {
+#ifdef DEBUG_BEACON_INTERVAL
+					printf("%lu.%lu - %lu.%lu = %lu.%lu (vs %lu)\n",
+							(ulong)now.tv_sec, now.tv_nsec,
+							(ulong)last_beacon.tv_sec, last_beacon.tv_nsec,
+							(ulong)diff.tv_sec, diff.tv_nsec,
+							(ulong)BEACON_INTERVAL * 1000000);
 #endif
-		}
+					if (!send_beacon(sock))
+						break;
+					last_beacon = now;
+				}
+			} /* if (g_send_beacons) */
+		} /* if (got_packet) */
 	}
 
 	pcap_close(pch);
