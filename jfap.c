@@ -97,8 +97,8 @@ struct ieee80211_frame_header {
 	u_int8_t dst_mac[ETH_ALEN];
 	u_int8_t src_mac[ETH_ALEN];
 	u_int8_t bssid[ETH_ALEN];
-	u_int seq:12;
 	u_int frag:4;
+	u_int seq:12;
 } __attribute__((__packed__));
 typedef struct ieee80211_frame_header dot11_frame_t;
 
