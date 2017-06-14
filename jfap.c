@@ -344,6 +344,7 @@ int main(int argc, char *argv[])
 				}
 			}
 		} else {
+#ifdef SEND_BEACONS
 			/* we didn't get a pcket yet, do periodic processing */
 			struct timespec now, diff;
 
@@ -372,6 +373,7 @@ int main(int argc, char *argv[])
 					break;
 				last_beacon = now;
 			}
+#endif
 		}
 	}
 
