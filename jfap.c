@@ -221,8 +221,15 @@ int main(int argc, char *argv[])
 			u_int32_t *pu = &prt->it_present;
 #endif
 			const u_char *data;
+			u_int32_t left;
 			dot11_frame_t *d11;
 
+			/* check the length against the capture length */
+			if (pchdr->len > pchdr->caplen)
+				fprintf(stderr, "[-] WARNING: truncated frame! (len: %lu > caplen: %lu)\n",
+						(ulong)pchdr->len, (ulong)pchdr->caplen);
+
+			/* process the radiotap header */
 #ifdef DEBUG_RADIOTAP
 			printf("[*] got RADIOTAP packet - ver:%u pad:%u len:%u\n",
 					prt->it_version, prt->it_pad, prt->it_len);
@@ -234,15 +241,20 @@ int main(int argc, char *argv[])
 				printf("    present[%u]: 0x%lx\n", idx, (ulong)pu[idx]);
 			}
 #endif
-			if (pchdr->len > pchdr->caplen)
-				fprintf(stderr, "[-] WARNING: truncated frame! (len: %lu > caplen: %lu)\n",
-						(ulong)pchdr->len, (ulong)pchdr->caplen);
 			if (prt->it_len >= pchdr->caplen) {
 				fprintf(stderr, "[!] captured frame has no data?\n");
-				break;
+				continue;
 			}
-			data = inbuf + prt->it_len;
 
+			/* prepare the reset of the data for processing */
+			data = inbuf + prt->it_len;
+			left = pchdr->caplen - prt->it_len;
+
+			/* process the 802.11 frame */
+			if (left < sizeof(*d11)) {
+				fprintf(stderr, "[-] Not enough data for 802.11 frame header!\n");
+				continue;
+			}
 			d11 = (dot11_frame_t *)data;
 			if (d11->type != T_DATA
 				&& !(d11->type == T_MGMT && d11->subtype == ST_BEACON)) {
