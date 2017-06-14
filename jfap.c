@@ -521,7 +521,7 @@ int send_beacon(int sock)
 	memcpy(d11->dst_mac, IEEE80211_BROADCAST_ADDR, ETH_ALEN);
 	memcpy(d11->src_mac, g_bssid, ETH_ALEN);
 	memcpy(d11->bssid, g_bssid, ETH_ALEN);
-	d11->seq = 123;
+	//d11->seq = 0;
 	//d11->frag = 0;
 	p = (char *)(d11 + 1);
 
@@ -612,7 +612,7 @@ int send_probe_response(int sock, u_int8_t *dst_mac)
 	memcpy(d11->dst_mac, dst_mac, ETH_ALEN);
 	memcpy(d11->src_mac, g_bssid, ETH_ALEN);
 	memcpy(d11->bssid, g_bssid, ETH_ALEN);
-	d11->seq = 123;
+	//d11->seq = 0;
 	//d11->frag = 0;
 	p = (char *)(d11 + 1);
 
