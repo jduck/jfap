@@ -121,6 +121,7 @@ int start_pcap(pcap_t **pcap, char *iface);
 int open_raw_socket(char *iface);
 int send_beacon(int sock);
 int send_probe_response(int sock, u_int8_t *dst_mac);
+ie_t *get_ssid_ie(const u_int8_t *data, u_int32_t left);
 
 
 void usage(char *argv0)
@@ -675,8 +676,59 @@ int send_probe_response(int sock, u_int8_t *dst_mac)
 		return 0;
 	}
 
-	printf("[*] Sent probe response to %s!\n", mac_string(dst_mac));
+	//printf("[*] Sent probe response to %s!\n", mac_string(dst_mac));
 	return 1;
+}
+
+
+/*
+ * process the information elements looking for an SSID
+ */
+ie_t *
+get_ssid_ie(const u_int8_t *data, u_int32_t left)
+{
+	ie_t *ie;
+	const u_int8_t *p = data;
+	u_int32_t rem = left;
+
+#ifdef DEBUG_GET_SSID_IE
+	printf("[*] processing information element data:\n");
+	hexdump(data, left);
+#endif
+
+	while (rem > 0) {
+		/* see if we have enough for the IE header */
+		if (rem < sizeof(*ie)) {
+			fprintf(stderr, "[-] Not enough data for an IE!\n");
+			return NULL;
+		}
+
+		ie = (ie_t *)p;
+
+		/* advance... */
+		p += sizeof(*ie);
+		rem -= sizeof(*ie);
+
+		/* now, is it an SSID ? */
+		if (ie->id == IEID_SSID) {
+			return ie;
+		}
+
+		/* check if we have all the data */
+		if (rem < ie->len) {
+			fprintf(stderr, "[-] Not enough data for the IE's data!\n");
+			return NULL;
+		}
+
+		/* advance past the ie->data */
+		p += ie->len;
+		rem -= ie->len;
+	}
+
+#ifdef DEBUG_GET_SSID_IE
+	fprintf(stderr, "[-] SSID IE not found!\n");
+#endif
+	return NULL;
 }
 
 
