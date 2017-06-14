@@ -835,7 +835,7 @@ int send_assoc_response(int sock, u_int8_t *dst_mac)
 	d11 = (dot11_frame_t *)p;
 	//d11->version = 0;
 	d11->type = T_MGMT;
-	d11->subtype = ST_AUTH;
+	d11->subtype = ST_ASSOC_RESP;
 	//d11->ctrlflags = 0;
 	//d11->duration = 0;
 	memcpy(d11->dst_mac, dst_mac, ETH_ALEN);
