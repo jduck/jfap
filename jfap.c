@@ -314,52 +314,42 @@ int main(int argc, char *argv[])
 			/* if it's a probe request, see if it's for us */
 			if (d11->type == T_MGMT) {
 				if (d11->subtype == ST_PROBE_REQ) {
+					ie_t *ie = get_ssid_ie(data, left);
+					char ssid_req[32] = { 0 };
+
+					if (!ie)
+						continue;
+					if (ie->len > 0) {
+						if (ie->len > sizeof(ssid_req) - 1)
+							strncpy(ssid_req, (char *)ie->data, sizeof(ssid_req) - 1);
+						else
+							strncpy(ssid_req, (char *)ie->data, ie->len);
+						printf("[*] (%s) Probe request for SSID (%u bytes): \"%s\"\n", mac_string(d11->src_mac), ie->len, ssid_req);
+					}
+
 					if (!memcmp(d11->dst_mac, g_bssid, ETH_ALEN)) {
+#define CHECK_SSID
 #ifdef CHECK_SSID
 						/* for us!? */
-						ie_t *ie;
-
-						if (left < sizeof(*ie)) {
-							fprintf(stderr, "[-] Not enough data for an IE!\n");
-							continue;
+						if (!strcmp(ssid_req, (char *)g_ssid)) {
+							printf("[*] (%s) Probe request for our BSSID and SSID, replying...\n", mac_string(d11->src_mac));
+							if (!send_probe_response(sock, d11->src_mac))
+								continue;
 						}
-						ie = (ie_t *)data;
-
-						data += sizeof(*ie);
-						left -= sizeof(*ie);
-
-						if (left < ie->len) {
-							fprintf(stderr, "[-] Not enough data for an IE data!\n");
-							continue;
-						}
-
-						if (ie->id == IEID_SSID) {
-							char ssid_req[32] = { 0 };
-							u_int8_t ssid_req_len = ie->len;
-
-							if (ssid_req_len > sizeof(ssid_req) - 1)
-								ssid_req_len = sizeof(ssid_req) - 1;
-							strncpy(ssid_req, (char *)data, ssid_req_len);
-							if (!strcmp(ssid_req, g_ssid)) {
-								printf("[*] We received a probe request for our BSSID and SSID: \"%s\"\n", ssid_req);
-								if (!send_probe_response(sock, d11->src_mac))
-									continue;
-							}
-						}
-
-						data += ie->len;
-						left -= ie->len;
 #else
-						printf("[*] We received a probe request for our BSSID\n");
+						printf("[*] (%s) Probe request for our BSSID, replying...\n", mac_string(d11->src_mac));
 						if (!send_probe_response(sock, d11->src_mac))
 							continue;
 #endif
-						/* ... */
 					} else if (!memcmp(d11->dst_mac, IEEE80211_BROADCAST_ADDR, ETH_ALEN)) {
 						/* broadcast probe request - discovery? */
-						printf("[*] Broadcast probe request received, replying...\n");
-						if (!send_probe_response(sock, d11->src_mac))
-							continue;
+						if (ie && ie->len > 0) {
+							printf("[*] (%s) Broadcast probe request for \"%s\" received, NOT replying...\n", mac_string(d11->src_mac), ssid_req);
+						} else {
+							printf("[*] (%s) Broadcast probe request received, replying...\n", mac_string(d11->src_mac));
+							if (!send_probe_response(sock, d11->src_mac))
+								continue;
+						}
 					}
 				}
 			}
