@@ -16,11 +16,9 @@
 /* internet networking / packet sending */
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <netinet/ether.h>
 #include <linux/if.h>
 #include <linux/if_packet.h>
-#include <linux/if_ether.h>
-#include <linux/if_arp.h>
-//#include <arpa/inet.h>
 
 /* packet capturing */
 #include <pcap/pcap.h>
@@ -132,6 +130,7 @@ void usage(char *argv0)
 			"-b             send beacons regularly (default: off)\n"
 			"-c <channel>   use the specified channel (default: %d)\n"
 			"-i <interface> interface to use for monitoring/injection (default: mon0)\n"
+			"-m <mac addr>  use the specified mac address (default: from phys)\n"
 			, DEFAULT_CHANNEL
 		   );
 }
@@ -170,7 +169,7 @@ int main(int argc, char *argv[])
 
 	strcpy(iface, "mon0");
 
-	while ((c = getopt(argc, argv, "bc:i:")) != -1) {
+	while ((c = getopt(argc, argv, "bc:i:m:")) != -1) {
 		switch (c) {
 			case '?':
 			case 'h':
@@ -195,6 +194,19 @@ int main(int argc, char *argv[])
 
 			case 'i':
 				strncpy(iface, optarg, sizeof(iface) - 1);
+				break;
+
+			case 'm':
+				{
+					struct ether_addr *pe;
+
+					pe = ether_aton(optarg);
+					if (!pe) {
+						fprintf(stderr, "[!] invalid mac address: %s\n", optarg);
+						return 1;
+					}
+					memcpy(g_bssid, pe->ether_addr_octet, ETH_ALEN);
+				}
 				break;
 
 			default:
@@ -466,7 +478,8 @@ int open_raw_socket(char *iface)
 #ifdef DEBUG_IF_HWADDR
 	printf("[*] Interface hardware address: %s\n", mac_string((u_int8_t *)ifr.ifr_hwaddr.sa_data));
 #endif
-	memcpy(g_bssid, ifr.ifr_hwaddr.sa_data, sizeof(g_bssid));
+	if (!memcmp(g_bssid, "\x00\x00\x00\x00\x00\x00", ETH_ALEN))
+		memcpy(g_bssid, ifr.ifr_hwaddr.sa_data, ETH_ALEN);
     memcpy(la.sll_addr, ifr.ifr_hwaddr.sa_data, ETH_ALEN);
 
 	/* verify the interface uses RADIOTAP */
