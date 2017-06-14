@@ -40,6 +40,10 @@
 
 #define ST_BEACON 8
 
+#define IEID_SSID 0
+#define IEID_RATES 1
+#define IEID_DSPARAMS 3
+
 #define IEEE80211_RADIOTAP_RATE 2
 
 #define IEEE80211_BROADCAST_ADDR "\xff\xff\xff\xff\xff\xff"
@@ -458,7 +462,7 @@ int send_beacon(int sock, char *ssid)
 
 	/* add the ssid IE */
 	ie = (ie_t *)p;
-	//ie->id = 0; // ssid
+	//ie->id = IEID_SSID;
 	ie->len = ssid_len;
 	p = (char *)(ie + 1);
 	memcpy(p, ssid, ssid_len);
@@ -466,7 +470,7 @@ int send_beacon(int sock, char *ssid)
 
 	/* add the supported rate IE */
 	ie = (ie_t *)p;
-	ie->id = 1; // rates
+	ie->id = IEID_RATES;
 	ie->len = 8; // # of rates supported
 	p = (char *)(ie + 1);
 	*p++ = 0x0c;
@@ -480,7 +484,7 @@ int send_beacon(int sock, char *ssid)
 
 	/* add the channel parameter (ds params) */
 	ie = (ie_t *)p;
-	ie->id = 3; // ds params
+	ie->id = IEID_DSPARAMS;
 	ie->len = 1;
 	p = (char *)(ie + 1);
 	*p++ = g_channel;
