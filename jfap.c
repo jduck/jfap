@@ -268,17 +268,22 @@ int main(int argc, char *argv[])
 				break;
 			}
 
+			/* see how long since the last beacon. if it's been long enough,
+			 * send another */
 			diff.tv_sec = now.tv_sec - last_beacon.tv_sec;
 			diff.tv_nsec = now.tv_nsec - last_beacon.tv_nsec;
 			if (diff.tv_nsec < 0) {
 				--diff.tv_sec;
 				diff.tv_nsec += 1000000000;
 			}
-			printf("%lu.%lu - %lu.%lu = %lu.%lu\n",
-					(ulong)now.tv_sec, now.tv_nsec,
-					(ulong)last_beacon.tv_sec, last_beacon.tv_nsec,
-					(ulong)diff.tv_sec, diff.tv_nsec);
-			if (diff.tv_sec > 0 || diff.tv_nsec > BEACON_INTERVAL * 1000) {
+			if (diff.tv_sec > 0 || diff.tv_nsec > BEACON_INTERVAL * 1000000) {
+#ifdef DEBUG_BEACON_INTERVAL
+				printf("%lu.%lu - %lu.%lu = %lu.%lu (vs %lu)\n",
+						(ulong)now.tv_sec, now.tv_nsec,
+						(ulong)last_beacon.tv_sec, last_beacon.tv_nsec,
+						(ulong)diff.tv_sec, diff.tv_nsec,
+						(ulong)BEACON_INTERVAL * 1000000);
+#endif
 				if (!send_beacon(sock, ssid))
 					break;
 				last_beacon = now;
@@ -482,7 +487,7 @@ int send_beacon(int sock, char *ssid)
 		return 0;
 	}
 
-	printf("[*] Sent beacon frame\n");
+	//printf("[*] Sent beacon!\n");
 
 	return 1;
 }
