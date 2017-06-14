@@ -135,6 +135,7 @@ char *mac_string(u_int8_t *mac);
 void hexdump(const u_char *ptr, u_int len);
 
 ie_t *get_ssid_ie(const u_int8_t *data, u_int32_t left);
+u_int16_t get_sequence(void);
 
 int start_pcap(pcap_t **pcap, char *iface);
 int open_raw_socket(char *iface);
@@ -611,7 +612,7 @@ int send_beacon(int sock)
 	memcpy(d11->dst_mac, IEEE80211_BROADCAST_ADDR, ETH_ALEN);
 	memcpy(d11->src_mac, g_bssid, ETH_ALEN);
 	memcpy(d11->bssid, g_bssid, ETH_ALEN);
-	//d11->seq = 0;
+	d11->seq = get_sequence();
 	//d11->frag = 0;
 	p = (char *)(d11 + 1);
 
@@ -703,7 +704,7 @@ int send_probe_response(int sock, u_int8_t *dst_mac)
 	memcpy(d11->dst_mac, dst_mac, ETH_ALEN);
 	memcpy(d11->src_mac, g_bssid, ETH_ALEN);
 	memcpy(d11->bssid, g_bssid, ETH_ALEN);
-	//d11->seq = 0;
+	d11->seq = get_sequence();
 	//d11->frag = 0;
 	p = (char *)(d11 + 1);
 
@@ -790,7 +791,7 @@ int send_auth_response(int sock, u_int8_t *dst_mac)
 	memcpy(d11->dst_mac, dst_mac, ETH_ALEN);
 	memcpy(d11->src_mac, g_bssid, ETH_ALEN);
 	memcpy(d11->bssid, g_bssid, ETH_ALEN);
-	//d11->seq = 0;
+	d11->seq = get_sequence();
 	//d11->frag = 0;
 	p = (char *)(d11 + 1);
 
@@ -840,7 +841,7 @@ int send_assoc_response(int sock, u_int8_t *dst_mac)
 	memcpy(d11->dst_mac, dst_mac, ETH_ALEN);
 	memcpy(d11->src_mac, g_bssid, ETH_ALEN);
 	memcpy(d11->bssid, g_bssid, ETH_ALEN);
-	//d11->seq = 0;
+	d11->seq = get_sequence();
 	//d11->frag = 0;
 	p = (char *)(d11 + 1);
 
@@ -951,4 +952,19 @@ char *mac_string(u_int8_t *mac)
 	*p = '\0';
 
 	return mac_str;
+}
+
+
+/*
+ * handle sequence number generation
+ */
+u_int16_t get_sequence(void)
+{
+	static u_int16_t sequence = 1337;
+	uint16_t ret = sequence;
+
+	sequence++;
+	if (sequence > 4095)
+		sequence = 0;
+	return ret;
 }
