@@ -42,7 +42,6 @@
 
 #define IEEE80211_RADIOTAP_RATE 2
 
-#define IEEEE80211_ADDR_LEN 6
 #define IEEE80211_BROADCAST_ADDR "\xff\xff\xff\xff\xff\xff"
 
 
@@ -66,7 +65,7 @@ const char *dot11_subtypes[4][16] = {
 	{ "0?", "1?", "2?", "3?", "4?", "5?", "6?", "7?", "8?", "9?", "10?", "11?", "12?", "13?", "14?", "15?" }
 };
 
-u_int8_t g_bssid[IEEEE80211_ADDR_LEN];
+u_int8_t g_bssid[ETH_ALEN];
 u_int8_t g_channel = DEFAULT_CHANNEL;
 
 
@@ -84,9 +83,9 @@ struct ieee80211_frame_header {
 	u_int subtype:4;
 	u_int8_t ctrlflags;
 	u_int16_t duration;
-	u_int8_t dst_mac[IEEEE80211_ADDR_LEN];
-	u_int8_t src_mac[IEEEE80211_ADDR_LEN];
-	u_int8_t bssid[IEEEE80211_ADDR_LEN];
+	u_int8_t dst_mac[ETH_ALEN];
+	u_int8_t src_mac[ETH_ALEN];
+	u_int8_t bssid[ETH_ALEN];
 	u_int seq:12;
 	u_int frag:4;
 } __attribute__((__packed__));
@@ -245,7 +244,8 @@ int main(int argc, char *argv[])
 			data = inbuf + prt->it_len;
 
 			d11 = (dot11_frame_t *)data;
-			if (d11->type != T_DATA) {
+			if (d11->type != T_DATA
+				&& !(d11->type == T_MGMT && d11->subtype == ST_BEACON)) {
 				printf("[*] 802.11 packet ver:%u type:%s subtype:%s\n",
 						d11->version, dot11_types[d11->type],
 						dot11_subtypes[d11->type][d11->subtype]);
@@ -369,9 +369,9 @@ int open_raw_socket(char *iface)
     }
 #ifdef DEBUG_IF_HWADDR
 	printf("[*] Interface hardware address: ");
-	for (i = 0; i < IEEEE80211_ADDR_LEN; i++) {
+	for (i = 0; i < ETH_ALEN; i++) {
 		printf("%02X", ifr.ifr_hwaddr.sa_data[i] & 0xff);
-		if (i < IEEEE80211_ADDR_LEN - 1)
+		if (i < ETH_ALEN - 1)
 			printf(":");
 	}
 	printf("\n");
@@ -425,9 +425,9 @@ int send_beacon(int sock, char *ssid)
 	d11->subtype = ST_BEACON;
 	//d11->ctrlflags = 0;
 	//d11->duration = 0;
-	memcpy(d11->dst_mac, IEEE80211_BROADCAST_ADDR, IEEEE80211_ADDR_LEN);
-	memcpy(d11->src_mac, g_bssid, IEEEE80211_ADDR_LEN);
-	memcpy(d11->bssid, g_bssid, IEEEE80211_ADDR_LEN);
+	memcpy(d11->dst_mac, IEEE80211_BROADCAST_ADDR, ETH_ALEN);
+	memcpy(d11->src_mac, g_bssid, ETH_ALEN);
+	memcpy(d11->bssid, g_bssid, ETH_ALEN);
 	d11->seq = 123;
 	//d11->frag = 0;
 	p = (char *)(d11 + 1);
