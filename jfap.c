@@ -38,6 +38,8 @@
 #define T_DATA 0x2  /* data */
 #define T_RESV 0x3  /* reserved */
 
+#define ST_PROBE_REQ 4
+#define ST_PROBE_RESP 5
 #define ST_BEACON 8
 
 #define IEID_SSID 0
@@ -113,9 +115,11 @@ typedef struct ieee80211_information_element ie_t;
 
 char *mac_string(u_int8_t *mac);
 void hexdump(const u_char *ptr, u_int len);
+
 int start_pcap(pcap_t **pcap, char *iface);
 int open_raw_socket(char *iface);
-int send_beacon(int sock, char *ssid);
+int send_beacon(int sock);
+int send_probe_response(int sock, u_int8_t *dst_mac);
 
 
 void usage(char *argv0)
@@ -282,6 +286,63 @@ int main(int argc, char *argv[])
 #endif
 			}
 #endif
+
+			/* prepare further processing */
+			data = (const u_char *)(d11 + 1);
+			left -= sizeof(*d11);
+
+			/* if it's a probe request, see if it's for us */
+			if (d11->type == T_MGMT) {
+				if (d11->subtype == ST_PROBE_REQ) {
+					if (!memcmp(d11->dst_mac, g_bssid, ETH_ALEN)) {
+#ifdef CHECK_SSID
+						/* for us!? */
+						ie_t *ie;
+
+						if (left < sizeof(*ie)) {
+							fprintf(stderr, "[-] Not enough data for an IE!\n");
+							continue;
+						}
+						ie = (ie_t *)data;
+
+						data += sizeof(*ie);
+						left -= sizeof(*ie);
+
+						if (left < ie->len) {
+							fprintf(stderr, "[-] Not enough data for an IE data!\n");
+							continue;
+						}
+
+						if (ie->id == IEID_SSID) {
+							char ssid_req[32] = { 0 };
+							u_int8_t ssid_req_len = ie->len;
+
+							if (ssid_req_len > sizeof(ssid_req) - 1)
+								ssid_req_len = sizeof(ssid_req) - 1;
+							strncpy(ssid_req, (char *)data, ssid_req_len);
+							if (!strcmp(ssid_req, g_ssid)) {
+								printf("[*] We received a probe request for our BSSID and SSID: \"%s\"\n", ssid_req);
+								if (!send_probe_response(sock, d11->src_mac))
+									continue;
+							}
+						}
+
+						data += ie->len;
+						left -= ie->len;
+#else
+						printf("[*] We received a probe request for our BSSID\n");
+						if (!send_probe_response(sock, d11->src_mac))
+							continue;
+#endif
+						/* ... */
+					} else if (!memcmp(d11->dst_mac, IEEE80211_BROADCAST_ADDR, ETH_ALEN)) {
+						/* broadcast probe request - discovery? */
+						printf("[*] Broadcast probe request received, replying...\n");
+						if (!send_probe_response(sock, d11->src_mac))
+							continue;
+					}
+				}
+			}
 		} else {
 			/* we didn't get a pcket yet, do periodic processing */
 			struct timespec now, diff;
@@ -502,7 +563,97 @@ int send_beacon(int sock)
 	}
 
 	//printf("[*] Sent beacon!\n");
+	return 1;
+}
 
+
+/*
+ * send a probe response to the specified sender
+ */
+int send_probe_response(int sock, u_int8_t *dst_mac)
+{
+	char pkt[4096] = { 0 }, *p;
+	radiotap_t *prt;
+	dot11_frame_t *d11;
+	beacon_t *bc;
+	ie_t *ie;
+	u_int8_t ssid_len = strlen((char *)g_ssid);
+
+	/* fill out the radio tap header */
+	prt = (radiotap_t *)pkt;
+	prt->it_version = 0;
+	prt->it_len = sizeof(*prt) + 1;
+	prt->it_present = (1 << IEEE80211_RADIOTAP_RATE);
+
+	/* add the data rate (part of the radiotap header) */
+	p = (char *)(prt + 1);
+	*p++ = 0x4;  // 2Mb/s
+
+	/* add the 802.11 header */
+	d11 = (dot11_frame_t *)p;
+	//d11->version = 0;
+	d11->type = T_MGMT;
+	d11->subtype = ST_PROBE_RESP;
+	//d11->ctrlflags = 0;
+	//d11->duration = 0;
+	memcpy(d11->dst_mac, dst_mac, ETH_ALEN);
+	memcpy(d11->src_mac, g_bssid, ETH_ALEN);
+	memcpy(d11->bssid, g_bssid, ETH_ALEN);
+	d11->seq = 123;
+	//d11->frag = 0;
+	p = (char *)(d11 + 1);
+
+	/* add the beacon info */
+	bc = (beacon_t *)p;
+	//bc->timestamp = 0;
+	bc->interval = BEACON_INTERVAL;
+	bc->caps = 1; // we are an AP ;-)
+	p = (char *)(bc + 1);
+
+	/* add the ssid IE */
+	ie = (ie_t *)p;
+	//ie->id = IEID_SSID;
+	ie->len = ssid_len;
+	p = (char *)(ie + 1);
+	memcpy(p, g_ssid, ssid_len);
+	p += ssid_len;
+
+	/* add the supported rate IE */
+	ie = (ie_t *)p;
+	ie->id = IEID_RATES;
+	ie->len = 8; // # of rates supported
+	p = (char *)(ie + 1);
+	*p++ = 0x0c;
+	*p++ = 0x12;
+	*p++ = 0x18;
+	*p++ = 0x24;
+	*p++ = 0x30;
+	*p++ = 0x48;
+	*p++ = 0x60;
+	*p++ = 0x6c;
+
+	/* add the channel parameter (ds params) */
+	ie = (ie_t *)p;
+	ie->id = IEID_DSPARAMS;
+	ie->len = 1;
+	p = (char *)(ie + 1);
+	*p++ = g_channel;
+
+#if 0
+	/* add the RM capabilities */
+	ie = (ie_t *)p;
+	ie->id = 0x46; // rm capabilities
+	ie->len = 5;
+	p = (char *)(ie + 1);
+	memset(p, 0xff, ie->len);
+#endif
+
+	if (send(sock, pkt, p - pkt, 0) == -1) {
+		perror("[!] Unable to send beacon!");
+		return 0;
+	}
+
+	printf("[*] Sent probe response to %s!\n", mac_string(dst_mac));
 	return 1;
 }
 
