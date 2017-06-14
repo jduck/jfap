@@ -111,6 +111,7 @@ struct ieee80211_information_element {
 typedef struct ieee80211_information_element ie_t;
 
 
+char *mac_string(u_int8_t *mac);
 void hexdump(const u_char *ptr, u_int len);
 int start_pcap(pcap_t **pcap, char *iface);
 int open_raw_socket(char *iface);
@@ -353,9 +354,6 @@ int start_pcap(pcap_t **pcap, char *iface)
 int open_raw_socket(char *iface)
 {
 	int sock;
-#ifdef DEBUG_IF_HWADDR
-	int i;
-#endif
     struct sockaddr_ll la;
     struct ifreq ifr;
 
@@ -389,13 +387,7 @@ int open_raw_socket(char *iface)
         return (-1);
     }
 #ifdef DEBUG_IF_HWADDR
-	printf("[*] Interface hardware address: ");
-	for (i = 0; i < ETH_ALEN; i++) {
-		printf("%02X", ifr.ifr_hwaddr.sa_data[i] & 0xff);
-		if (i < ETH_ALEN - 1)
-			printf(":");
-	}
-	printf("\n");
+	printf("[*] Interface hardware address: %s\n", mac_string((u_int8_t *)ifr.ifr_hwaddr.sa_data));
 #endif
 	memcpy(g_bssid, ifr.ifr_hwaddr.sa_data, sizeof(g_bssid));
     memcpy(la.sll_addr, ifr.ifr_hwaddr.sa_data, ETH_ALEN);
@@ -506,4 +498,34 @@ int send_beacon(int sock)
 	//printf("[*] Sent beacon!\n");
 
 	return 1;
+}
+
+
+/*
+ * create the ascii representation of the specified mac address
+ */
+char *mac_string(u_int8_t *mac)
+{
+	static char mac_str[32];
+	char *p = mac_str;
+	int i;
+
+	for (i = 0; i < ETH_ALEN; i++) {
+		u_int8_t hi = mac[i] >> 4;
+		u_int8_t lo = mac[i] & 0xf;
+
+		if (hi > 9)
+			*p++ = hi - 10 + 'a';
+		else
+			*p++ = hi + '0';
+		if (lo > 9)
+			*p++ = lo - 10 + 'a';
+		else
+			*p++ = lo + '0';
+		if (i < ETH_ALEN - 1)
+			*p++ = ':';
+	}
+	*p = '\0';
+
+	return mac_str;
 }
