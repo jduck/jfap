@@ -109,7 +109,7 @@ typedef struct ieee80211_beacon beacon_t;
 struct ieee80211_information_element {
 	u_int8_t id;
 	u_int8_t len;
-	u_int8_t *data[0];
+	u_int8_t data[0];
 } __attribute__((__packed__));
 typedef struct ieee80211_information_element ie_t;
 
