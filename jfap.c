@@ -26,7 +26,7 @@
 
 /* global hardcoded parameters */
 #define SNAPLEN 4096
-#define BEACON_INTERVAL 100
+#define BEACON_INTERVAL 500
 #define DEFAULT_CHANNEL 1
 
 
