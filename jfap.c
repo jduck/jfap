@@ -78,7 +78,7 @@ int g_send_beacons = 0;
 
 
 struct ieee80211_radiotap_header {
-	u_int8_t it_version;     /* set to 0 */
+	u_int8_t it_version;      /* set to 0 */
 	u_int8_t it_pad;
 	u_int16_t it_len;         /* entire length */
 	u_int32_t it_present;     /* fields present */
@@ -131,8 +131,7 @@ void usage(char *argv0)
 			"-c <channel>   use the specified channel (default: %d)\n"
 			"-i <interface> interface to use for monitoring/injection (default: mon0)\n"
 			"-m <mac addr>  use the specified mac address (default: from phys)\n"
-			, DEFAULT_CHANNEL
-		   );
+			, DEFAULT_CHANNEL);
 }
 
 
@@ -410,30 +409,30 @@ int main(int argc, char *argv[])
  */
 int start_pcap(pcap_t **pcap, char *iface)
 {
-   char errorstr[PCAP_ERRBUF_SIZE];
-   int datalink;
+	char errorstr[PCAP_ERRBUF_SIZE];
+	int datalink;
 
-   printf("[*] Starting capture on \"%s\" ...\n", iface);
+	printf("[*] Starting capture on \"%s\" ...\n", iface);
 
-   *pcap = pcap_open_live(iface, SNAPLEN, 8, 25, errorstr);
-   if (*pcap == (pcap_t *)NULL) {
-	   fprintf(stderr, "[!] pcap_open_live() failed: %s\n", errorstr);
-	   return 0;
-   }
+	*pcap = pcap_open_live(iface, SNAPLEN, 8, 25, errorstr);
+	if (*pcap == (pcap_t *)NULL) {
+		fprintf(stderr, "[!] pcap_open_live() failed: %s\n", errorstr);
+		return 0;
+	}
 
-   datalink = pcap_datalink(*pcap);
-   switch (datalink) {
-	   case DLT_IEEE802_11_RADIO:
-		   break;
+	datalink = pcap_datalink(*pcap);
+	switch (datalink) {
+		case DLT_IEEE802_11_RADIO:
+			break;
 
-	  default:
-		   fprintf(stderr, "[!] Unknown datalink for interface \"%s\": %d\n",
-				   iface, datalink);
-		   fprintf(stderr, "    Only RADIOTAP is currently supported.\n");
-		   return 0;
-   }
+		default:
+			fprintf(stderr, "[!] Unknown datalink for interface \"%s\": %d\n",
+					iface, datalink);
+			fprintf(stderr, "    Only RADIOTAP is currently supported.\n");
+			return 0;
+	}
 
-   return 1;
+	return 1;
 }
 
 
@@ -443,58 +442,58 @@ int start_pcap(pcap_t **pcap, char *iface)
 int open_raw_socket(char *iface)
 {
 	int sock;
-    struct sockaddr_ll la;
-    struct ifreq ifr;
+	struct sockaddr_ll la;
+	struct ifreq ifr;
 
 	sock = socket(PF_PACKET, SOCK_RAW, ETH_P_ALL);
-    if (sock == -1) {
+	if (sock == -1) {
 		perror("[!] Unable to open raw socket");
 		return -1;
 	}
 
 	/* build the link-level address struct for binding */
 	memset(&la, 0, sizeof(la));
-    la.sll_family = AF_PACKET;
-    la.sll_halen = ETH_ALEN;
+	la.sll_family = AF_PACKET;
+	la.sll_halen = ETH_ALEN;
 
 	/* get the interface index */
 	memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, iface, IFNAMSIZ);
-    if (ioctl(sock, SIOCGIFINDEX, &ifr) < 0) {
+	strncpy(ifr.ifr_name, iface, IFNAMSIZ);
+	if (ioctl(sock, SIOCGIFINDEX, &ifr) < 0) {
 		perror("[!] Unable to get interface index");
 		close(sock);
-        return -1;
-    }
+		return -1;
+	}
 #ifdef DEBUG_IF_INDEX
 	printf("[*] Interface index: %u\n", ifr.ifr_ifindex);
 #endif
-    la.sll_ifindex = ifr.ifr_ifindex;
+	la.sll_ifindex = ifr.ifr_ifindex;
 
-    if (ioctl(sock, SIOCGIFHWADDR, &ifr) < 0) {
+	if (ioctl(sock, SIOCGIFHWADDR, &ifr) < 0) {
 		perror("[!] Unable to get hardware address");
 		close(sock);
-        return (-1);
-    }
+		return -1;
+	}
 #ifdef DEBUG_IF_HWADDR
 	printf("[*] Interface hardware address: %s\n", mac_string((u_int8_t *)ifr.ifr_hwaddr.sa_data));
 #endif
 	if (!memcmp(g_bssid, "\x00\x00\x00\x00\x00\x00", ETH_ALEN))
 		memcpy(g_bssid, ifr.ifr_hwaddr.sa_data, ETH_ALEN);
-    memcpy(la.sll_addr, ifr.ifr_hwaddr.sa_data, ETH_ALEN);
+	 memcpy(la.sll_addr, ifr.ifr_hwaddr.sa_data, ETH_ALEN);
 
-	/* verify the interface uses RADIOTAP */
-    if (ifr.ifr_hwaddr.sa_family != ARPHRD_IEEE80211_RADIOTAP) {
-        fprintf(stderr, "[!] bad address family: %u\n", ifr.ifr_hwaddr.sa_family);
-        close(sock);
-		return -1;
-    }
+	 /* verify the interface uses RADIOTAP */
+	 if (ifr.ifr_hwaddr.sa_family != ARPHRD_IEEE80211_RADIOTAP) {
+		 fprintf(stderr, "[!] bad address family: %u\n", ifr.ifr_hwaddr.sa_family);
+		 close(sock);
+		 return -1;
+	 }
 
-	/* bind this socket to the interface */
-    if (bind(sock, (struct sockaddr *)&la, sizeof(la)) == -1) {
+	 /* bind this socket to the interface */
+	 if (bind(sock, (struct sockaddr *)&la, sizeof(la)) == -1) {
 		perror("[!] Unable to bind to interface");
-        close(sock);
-        return -1;
-    }
+		close(sock);
+		return -1;
+	}
 	return sock;
 }
 
