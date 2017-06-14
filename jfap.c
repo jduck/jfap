@@ -36,6 +36,8 @@
 #define T_DATA 0x2  /* data */
 #define T_RESV 0x3  /* reserved */
 
+#define ST_ASSOC_REQ 0
+#define ST_ASSOC_RESP 1
 #define ST_PROBE_REQ 4
 #define ST_PROBE_RESP 5
 #define ST_BEACON 8
@@ -121,6 +123,13 @@ struct ieee80211_authentication {
 } __attribute__((__packed__));
 typedef struct ieee80211_authentication auth_t;
 
+struct ieee80211_assoc_response {
+	u_int16_t caps;
+	u_int16_t status;
+	u_int16_t id;
+} __attribute__((__packed__));
+typedef struct ieee80211_assoc_response assoc_resp_t;
+
 
 char *mac_string(u_int8_t *mac);
 void hexdump(const u_char *ptr, u_int len);
@@ -133,6 +142,7 @@ int open_raw_socket(char *iface);
 int send_beacon(int sock);
 int send_probe_response(int sock, u_int8_t *dst_mac);
 int send_auth_response(int sock, u_int8_t *dst_mac);
+int send_assoc_response(int sock, u_int8_t *dst_mac);
 
 
 void usage(char *argv0)
@@ -311,7 +321,10 @@ int main(int argc, char *argv[])
 
 			/* if it's a probe request, see if it's for us */
 			if (d11->type == T_MGMT) {
-				if (d11->subtype == ST_PROBE_REQ) {
+				if (d11->subtype == ST_BEACON) {
+					/* ignore beacons */
+					continue;
+				} else if (d11->subtype == ST_PROBE_REQ) {
 					ie_t *ie = get_ssid_ie(data, left);
 					char ssid_req[32] = { 0 };
 
@@ -367,8 +380,16 @@ int main(int argc, char *argv[])
 						printf("    BSSID: %s\n", mac_string(d11->bssid));
 					}
 					continue;
-				} else if (d11->subtype == ST_BEACON) {
-					/* ignore beacons */
+				} else if (d11->subtype == ST_ASSOC_REQ) {
+					if (!memcmp(d11->dst_mac, g_bssid, ETH_ALEN)) {
+						printf("[*] (%s) Association request received, replying...\n", mac_string(d11->src_mac));
+						if (!send_assoc_response(sock, d11->src_mac))
+							continue;
+					} else {
+						printf("[*] (%s) Association request for another BSSID received, replying...\n", mac_string(d11->src_mac));
+						printf("    DST MAC: %s\n", mac_string(d11->dst_mac));
+						printf("    BSSID: %s\n", mac_string(d11->bssid));
+					}
 					continue;
 				} /* subtype check */
 			} /* type check */
@@ -784,6 +805,70 @@ int send_auth_response(int sock, u_int8_t *dst_mac)
 		return 0;
 
 	//printf("[*] Sent auth response to %s!\n", mac_string(dst_mac));
+	return 1;
+}
+
+
+/*
+ * send an association response
+ */
+int send_assoc_response(int sock, u_int8_t *dst_mac)
+{
+	char pkt[4096] = { 0 }, *p;
+	radiotap_t *prt;
+	dot11_frame_t *d11;
+	assoc_resp_t *assoc;
+	ie_t *ie;
+
+	/* fill out the radio tap header */
+	prt = (radiotap_t *)pkt;
+	prt->it_version = 0;
+	prt->it_len = sizeof(*prt) + 1;
+	prt->it_present = (1 << IEEE80211_RADIOTAP_RATE);
+
+	/* add the data rate (part of the radiotap header) */
+	p = (char *)(prt + 1);
+	*p++ = 0x4;  // 2Mb/s
+
+	/* add the 802.11 header */
+	d11 = (dot11_frame_t *)p;
+	//d11->version = 0;
+	d11->type = T_MGMT;
+	d11->subtype = ST_AUTH;
+	//d11->ctrlflags = 0;
+	//d11->duration = 0;
+	memcpy(d11->dst_mac, dst_mac, ETH_ALEN);
+	memcpy(d11->src_mac, g_bssid, ETH_ALEN);
+	memcpy(d11->bssid, g_bssid, ETH_ALEN);
+	//d11->seq = 0;
+	//d11->frag = 0;
+	p = (char *)(d11 + 1);
+
+	/* add the assoc info */
+	assoc = (assoc_resp_t *)p;
+	assoc->caps = 1;
+	//assoc->status = 0; // successful
+	assoc->id = 1;
+	p = (char *)(assoc + 1);
+
+	/* add the supported rate IE */
+	ie = (ie_t *)p;
+	ie->id = IEID_RATES;
+	ie->len = 8; // # of rates supported
+	p = (char *)(ie + 1);
+	*p++ = 0x0c;
+	*p++ = 0x12;
+	*p++ = 0x18;
+	*p++ = 0x24;
+	*p++ = 0x30;
+	*p++ = 0x48;
+	*p++ = 0x60;
+	*p++ = 0x6c;
+
+	if (!send_packet(sock, pkt, p - pkt, d11))
+		return 0;
+
+	//printf("[*] Sent association response to %s!\n", mac_string(dst_mac));
 	return 1;
 }
 
