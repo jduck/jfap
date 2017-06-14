@@ -265,6 +265,7 @@ int main(int argc, char *argv[])
 				continue;
 			}
 			d11 = (dot11_frame_t *)data;
+#ifdef DEBUG_DOT11
 			if (d11->type != T_DATA
 				&& !(d11->type == T_MGMT && d11->subtype == ST_BEACON)) {
 				printf("[*] 802.11 packet ver:%u type:%s subtype:%s\n",
@@ -280,6 +281,7 @@ int main(int argc, char *argv[])
 				hexdump(data, pchdr->caplen - prt->it_len);
 #endif
 			}
+#endif
 		} else {
 			/* we didn't get a pcket yet, do periodic processing */
 			struct timespec now, diff;
