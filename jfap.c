@@ -257,7 +257,11 @@ int main(int argc, char *argv[])
 
 			/* process the 802.11 frame */
 			if (left < sizeof(*d11)) {
+#ifdef DEBUG_DOT11_SHORT_PKTS
 				fprintf(stderr, "[-] Not enough data for 802.11 frame header!\n");
+				printf("bytes left: %u\n", left);
+				hexdump(data, left);
+#endif
 				continue;
 			}
 			d11 = (dot11_frame_t *)data;
