@@ -300,23 +300,10 @@ int main(int argc, char *argv[])
 				continue;
 			}
 			d11 = (dot11_frame_t *)data;
-#ifdef DEBUG_DOT11
-			if (d11->type != T_DATA
-				&& !(d11->type == T_MGMT && d11->subtype == ST_BEACON)) {
-				printf("[*] 802.11 packet ver:%u type:%s subtype:%s\n",
-						d11->version, dot11_types[d11->type],
-						dot11_subtypes[d11->type][d11->subtype]);
-				hexdump(data, pchdr->caplen - prt->it_len);
-#ifdef DEBUG_DATA
-			} else {
-				printf("[*] 802.11 packet ver:%u type:%s subtype:%s%s\n",
-						d11->version, dot11_types[d11->type],
-						dot11_subtypes[d11->type][d11->subtype],
-						(d11->subtype >> 3) ? " (QoS)" : "");
-				hexdump(data, pchdr->caplen - prt->it_len);
-#endif
-			}
-#endif
+
+			/* ignore anything from us */
+			if (!memcmp(d11->src_mac, g_bssid, ETH_ALEN))
+				continue;
 
 			/* prepare further processing */
 			data = (const u_char *)(d11 + 1);
@@ -355,15 +342,55 @@ int main(int argc, char *argv[])
 					} else if (!memcmp(d11->dst_mac, IEEE80211_BROADCAST_ADDR, ETH_ALEN)) {
 						/* broadcast probe request - discovery? */
 						if (ie && ie->len > 0) {
-							printf("[*] (%s) Broadcast probe request for \"%s\" received, NOT replying...\n", mac_string(d11->src_mac), ssid_req);
+							if (!strcmp(ssid_req, (char *)g_ssid)) {
+								printf("[*] (%s) Broadcast probe request for our SSID \"%s\" received, replying...\n", mac_string(d11->src_mac), ssid_req);
+								if (!send_probe_response(sock, d11->src_mac))
+									continue;
+							} else {
+								printf("[*] (%s) Broadcast probe request for \"%s\" received, NOT replying...\n", mac_string(d11->src_mac), ssid_req);
+							}
 						} else {
 							printf("[*] (%s) Broadcast probe request received, replying...\n", mac_string(d11->src_mac));
 							if (!send_probe_response(sock, d11->src_mac))
 								continue;
 						}
+					} /* mac check */
+					continue;
+				} else if (d11->subtype == ST_AUTH) {
+					if (!memcmp(d11->dst_mac, g_bssid, ETH_ALEN)) {
+						printf("[*] (%s) Auth request received, replying...\n", mac_string(d11->src_mac));
+						if (!send_auth_response(sock, d11->src_mac))
+							continue;
+					} else {
+						printf("[*] (%s) Auth request for another BSSID received, NOT replying...\n", mac_string(d11->src_mac));
+						printf("    DST MAC: %s\n", mac_string(d11->dst_mac));
+						printf("    BSSID: %s\n", mac_string(d11->bssid));
 					}
-				}
+					continue;
+				} else if (d11->subtype == ST_BEACON) {
+					/* ignore beacons */
+					continue;
+				} /* subtype check */
+			} /* type check */
+
+			/* if we didn't handle this packet somehow, we should display it */
+			else if (d11->type == T_DATA) {
+#ifdef DEBUG_DATA
+				printf("[*] Unhandled 802.11 packet ver:%u type:%s subtype:%s%s\n",
+						d11->version, dot11_types[d11->type],
+						dot11_subtypes[d11->type][d11->subtype],
+						(d11->subtype >> 3) ? " (QoS)" : "");
+				hexdump(data, pchdr->caplen - prt->it_len);
+#endif
+				continue;
 			}
+
+#ifdef DEBUG_DOT11
+			printf("[*] Unhandled 802.11 packet ver:%u type:%s subtype:%s\n",
+					d11->version, dot11_types[d11->type],
+					dot11_subtypes[d11->type][d11->subtype]);
+			hexdump(data, pchdr->caplen - prt->it_len);
+#endif
 		} else {
 			if (g_send_beacons) {
 				/* we didn't get a pcket yet, do periodic processing */
@@ -501,6 +528,37 @@ int open_raw_socket(char *iface)
 
 
 /*
+ * send an 802.11 packet with a bunch of re-transmissions for the fuck of it
+ */
+int send_packet(int sock, char *pkt, size_t len, dot11_frame_t *d11)
+{
+#ifdef RETRANSMIT
+	int i;
+#endif
+
+	if (send(sock, pkt, len, 0) == -1) {
+		perror("[!] Unable to send beacon!");
+		return 0;
+	}
+
+#ifdef RETRANSMIT
+	/* set the retransmit flag on the 802.11 header */
+	d11->ctrlflags |= 8; // retry
+
+	/* send it again.. */
+	for (i = 0; i < 10; i++) {
+		usleep(100);
+		if (send(sock, pkt, len, 0) == -1) {
+			perror("[!] Unable to send beacon!");
+			return 0;
+		}
+	}
+#endif
+	return 1;
+}
+
+
+/*
  * send a beacon frame to announce our network
  */
 int send_beacon(int sock)
@@ -581,6 +639,7 @@ int send_beacon(int sock)
 	memset(p, 0xff, ie->len);
 #endif
 
+	/* don't retransmit beacons */
 	if (send(sock, pkt, p - pkt, 0) == -1) {
 		perror("[!] Unable to send beacon!");
 		return 0;
@@ -672,10 +731,8 @@ int send_probe_response(int sock, u_int8_t *dst_mac)
 	memset(p, 0xff, ie->len);
 #endif
 
-	if (send(sock, pkt, p - pkt, 0) == -1) {
-		perror("[!] Unable to send beacon!");
+	if (!send_packet(sock, pkt, p - pkt, d11))
 		return 0;
-	}
 
 	//printf("[*] Sent probe response to %s!\n", mac_string(dst_mac));
 	return 1;
