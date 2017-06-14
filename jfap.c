@@ -39,6 +39,7 @@
 #define ST_PROBE_REQ 4
 #define ST_PROBE_RESP 5
 #define ST_BEACON 8
+#define ST_AUTH 11
 
 #define IEID_SSID 0
 #define IEID_RATES 1
@@ -113,15 +114,25 @@ struct ieee80211_information_element {
 } __attribute__((__packed__));
 typedef struct ieee80211_information_element ie_t;
 
+struct ieee80211_authentication {
+	u_int16_t algorithm;
+	u_int16_t seq;
+	u_int16_t status;
+} __attribute__((__packed__));
+typedef struct ieee80211_authentication auth_t;
+
 
 char *mac_string(u_int8_t *mac);
 void hexdump(const u_char *ptr, u_int len);
 
+ie_t *get_ssid_ie(const u_int8_t *data, u_int32_t left);
+
 int start_pcap(pcap_t **pcap, char *iface);
 int open_raw_socket(char *iface);
+
 int send_beacon(int sock);
 int send_probe_response(int sock, u_int8_t *dst_mac);
-ie_t *get_ssid_ie(const u_int8_t *data, u_int32_t left);
+int send_auth_response(int sock, u_int8_t *dst_mac);
 
 
 void usage(char *argv0)
@@ -667,6 +678,55 @@ int send_probe_response(int sock, u_int8_t *dst_mac)
 	}
 
 	//printf("[*] Sent probe response to %s!\n", mac_string(dst_mac));
+	return 1;
+}
+
+
+/*
+ * send an authentication response
+ */
+int send_auth_response(int sock, u_int8_t *dst_mac)
+{
+	char pkt[4096] = { 0 }, *p;
+	radiotap_t *prt;
+	dot11_frame_t *d11;
+	auth_t *auth;
+
+	/* fill out the radio tap header */
+	prt = (radiotap_t *)pkt;
+	prt->it_version = 0;
+	prt->it_len = sizeof(*prt) + 1;
+	prt->it_present = (1 << IEEE80211_RADIOTAP_RATE);
+
+	/* add the data rate (part of the radiotap header) */
+	p = (char *)(prt + 1);
+	*p++ = 0x4;  // 2Mb/s
+
+	/* add the 802.11 header */
+	d11 = (dot11_frame_t *)p;
+	//d11->version = 0;
+	d11->type = T_MGMT;
+	d11->subtype = ST_AUTH;
+	//d11->ctrlflags = 0;
+	//d11->duration = 0;
+	memcpy(d11->dst_mac, dst_mac, ETH_ALEN);
+	memcpy(d11->src_mac, g_bssid, ETH_ALEN);
+	memcpy(d11->bssid, g_bssid, ETH_ALEN);
+	//d11->seq = 0;
+	//d11->frag = 0;
+	p = (char *)(d11 + 1);
+
+	/* add the auth info */
+	auth = (auth_t *)p;
+	//auth->algorithm = 0; // AUTH_OPEN;
+	auth->seq = 2; // should be responding to auth seq 1
+	//auth->status = 0; // successful
+	p = (char *)(auth + 1);
+
+	if (!send_packet(sock, pkt, p - pkt, d11))
+		return 0;
+
+	//printf("[*] Sent auth response to %s!\n", mac_string(dst_mac));
 	return 1;
 }
 
