@@ -49,7 +49,7 @@
 
 #define IEEE80211_RADIOTAP_RATE 2
 
-#define IEEE80211_BROADCAST_ADDR "\xff\xff\xff\xff\xff\xff"
+#define IEEE80211_BROADCAST_ADDR ((u_int8_t *)"\xff\xff\xff\xff\xff\xff")
 
 
 const char *dot11_types[4] = { "mgmt", "ctrl", "data", "resv" };
@@ -74,6 +74,7 @@ const char *dot11_subtypes[4][16] = {
 
 u_int8_t g_bssid[ETH_ALEN];
 u_int8_t g_ssid[32];
+u_int8_t g_ssid_len;
 u_int8_t g_channel = DEFAULT_CHANNEL;
 
 /* global options */
@@ -250,6 +251,7 @@ int main(int argc, char *argv[])
 	}
 
 	strncpy((char *)g_ssid, argv[0], sizeof(g_ssid) - 1);
+	g_ssid_len = strlen((char *)g_ssid);
 
 	printf("[*] Starting access point with SSID \"%s\" via interface \"%s\"\n",
 			g_ssid, iface);
@@ -552,7 +554,7 @@ int open_raw_socket(char *iface)
 /*
  * send an 802.11 packet with a bunch of re-transmissions for the fuck of it
  */
-int send_packet(int sock, char *pkt, size_t len, dot11_frame_t *d11)
+int send_packet(int sock, u_int8_t *pkt, size_t len, dot11_frame_t *d11)
 {
 #ifdef RETRANSMIT
 	int i;
@@ -581,85 +583,92 @@ int send_packet(int sock, char *pkt, size_t len, dot11_frame_t *d11)
 
 
 /*
- * send a beacon frame to announce our network
+ * fill the radio tap header in for a packet
  */
-int send_beacon(int sock)
+void fill_radiotap(u_int8_t **ppkt)
 {
-	char pkt[4096] = { 0 }, *p;
-	radiotap_t *prt;
-	dot11_frame_t *d11;
-	beacon_t *bc;
-	ie_t *ie;
-	u_int8_t ssid_len = strlen((char *)g_ssid);
+	u_int8_t *p = *ppkt;
+	radiotap_t *prt = (radiotap_t *)p;
 
 	/* fill out the radio tap header */
-	prt = (radiotap_t *)pkt;
 	prt->it_version = 0;
 	prt->it_len = sizeof(*prt) + 1;
 	prt->it_present = (1 << IEEE80211_RADIOTAP_RATE);
 
-	/* add the data rate (part of the radiotap header) */
-	p = (char *)(prt + 1);
+	p += sizeof(radiotap_t);
+
+	/* add the data rate (data of the radiotap header) */
 	*p++ = 0x4;  // 2Mb/s
 
+	*ppkt = p;
+}
+
+
+/*
+ * fill the 802.11 frame header
+ */
+void fill_dot11(u_int8_t **ppkt, u_int8_t type, u_int8_t subtype, u_int8_t *dst_mac)
+{
+	dot11_frame_t *d11 = (dot11_frame_t *)(*ppkt);
+
 	/* add the 802.11 header */
-	d11 = (dot11_frame_t *)p;
 	//d11->version = 0;
-	d11->type = T_MGMT;
-	d11->subtype = ST_BEACON;
+	d11->type = type;
+	d11->subtype = subtype;
 	//d11->ctrlflags = 0;
 	//d11->duration = 0;
-	memcpy(d11->dst_mac, IEEE80211_BROADCAST_ADDR, ETH_ALEN);
+	memcpy(d11->dst_mac, dst_mac, ETH_ALEN);
 	memcpy(d11->src_mac, g_bssid, ETH_ALEN);
 	memcpy(d11->bssid, g_bssid, ETH_ALEN);
 	d11->seq = get_sequence();
 	//d11->frag = 0;
-	p = (char *)(d11 + 1);
+
+	*ppkt += sizeof(dot11_frame_t);
+}
+
+
+/*
+ * fill in an information element
+ */
+void fill_ie(u_int8_t **ppkt, u_int8_t id, u_int8_t *data, u_int8_t len)
+{
+	u_int8_t *p = *ppkt;
+	ie_t *ie = (ie_t *)p;
+
+	/* add the ssid IE */
+	ie->id = id;
+	ie->len = len;
+
+	p = (u_int8_t *)(ie + 1);
+	memcpy(p, data, len);
+
+	p += len;
+	*ppkt = p;
+}
+
+
+/*
+ * send a beacon frame to announce our network
+ */
+int send_beacon(int sock)
+{
+	u_int8_t pkt[4096] = { 0 }, *p = pkt;
+	beacon_t *bc;
+
+	fill_radiotap(&p);
+	fill_dot11(&p, T_MGMT, ST_BEACON, IEEE80211_BROADCAST_ADDR);
 
 	/* add the beacon info */
 	bc = (beacon_t *)p;
 	//bc->timestamp = 0;
 	bc->interval = BEACON_INTERVAL;
 	bc->caps = 1; // we are an AP ;-)
-	p = (char *)(bc + 1);
+	p = (u_int8_t *)(bc + 1);
 
-	/* add the ssid IE */
-	ie = (ie_t *)p;
-	//ie->id = IEID_SSID;
-	ie->len = ssid_len;
-	p = (char *)(ie + 1);
-	memcpy(p, g_ssid, ssid_len);
-	p += ssid_len;
-
-	/* add the supported rate IE */
-	ie = (ie_t *)p;
-	ie->id = IEID_RATES;
-	ie->len = 8; // # of rates supported
-	p = (char *)(ie + 1);
-	*p++ = 0x0c;
-	*p++ = 0x12;
-	*p++ = 0x18;
-	*p++ = 0x24;
-	*p++ = 0x30;
-	*p++ = 0x48;
-	*p++ = 0x60;
-	*p++ = 0x6c;
-
-	/* add the channel parameter (ds params) */
-	ie = (ie_t *)p;
-	ie->id = IEID_DSPARAMS;
-	ie->len = 1;
-	p = (char *)(ie + 1);
-	*p++ = g_channel;
-
-#if 0
-	/* add the RM capabilities */
-	ie = (ie_t *)p;
-	ie->id = 0x46; // rm capabilities
-	ie->len = 5;
-	p = (char *)(ie + 1);
-	memset(p, 0xff, ie->len);
-#endif
+	fill_ie(&p, IEID_SSID, g_ssid, g_ssid_len);
+	fill_ie(&p, IEID_RATES, (u_int8_t *)"\x0c\x12\x18\x24\x30\x48\x60\x6c", 8);
+	fill_ie(&p, IEID_DSPARAMS, &g_channel, 1);
+	//fill_ie(&p, IEID_RMCAPS, "\xff\xff\xff\xff\xff", 5);
 
 	/* don't retransmit beacons */
 	if (send(sock, pkt, p - pkt, 0) == -1) {
@@ -677,81 +686,25 @@ int send_beacon(int sock)
  */
 int send_probe_response(int sock, u_int8_t *dst_mac)
 {
-	char pkt[4096] = { 0 }, *p;
-	radiotap_t *prt;
+	u_int8_t pkt[4096] = { 0 }, *p = pkt;
 	dot11_frame_t *d11;
 	beacon_t *bc;
-	ie_t *ie;
-	u_int8_t ssid_len = strlen((char *)g_ssid);
 
-	/* fill out the radio tap header */
-	prt = (radiotap_t *)pkt;
-	prt->it_version = 0;
-	prt->it_len = sizeof(*prt) + 1;
-	prt->it_present = (1 << IEEE80211_RADIOTAP_RATE);
-
-	/* add the data rate (part of the radiotap header) */
-	p = (char *)(prt + 1);
-	*p++ = 0x4;  // 2Mb/s
-
-	/* add the 802.11 header */
+	fill_radiotap(&p);
 	d11 = (dot11_frame_t *)p;
-	//d11->version = 0;
-	d11->type = T_MGMT;
-	d11->subtype = ST_PROBE_RESP;
-	//d11->ctrlflags = 0;
-	//d11->duration = 0;
-	memcpy(d11->dst_mac, dst_mac, ETH_ALEN);
-	memcpy(d11->src_mac, g_bssid, ETH_ALEN);
-	memcpy(d11->bssid, g_bssid, ETH_ALEN);
-	d11->seq = get_sequence();
-	//d11->frag = 0;
-	p = (char *)(d11 + 1);
+	fill_dot11(&p, T_MGMT, ST_PROBE_RESP, dst_mac);
 
 	/* add the beacon info */
 	bc = (beacon_t *)p;
 	//bc->timestamp = 0;
 	bc->interval = BEACON_INTERVAL;
 	bc->caps = 1; // we are an AP ;-)
-	p = (char *)(bc + 1);
+	p = (u_int8_t *)(bc + 1);
 
-	/* add the ssid IE */
-	ie = (ie_t *)p;
-	//ie->id = IEID_SSID;
-	ie->len = ssid_len;
-	p = (char *)(ie + 1);
-	memcpy(p, g_ssid, ssid_len);
-	p += ssid_len;
-
-	/* add the supported rate IE */
-	ie = (ie_t *)p;
-	ie->id = IEID_RATES;
-	ie->len = 8; // # of rates supported
-	p = (char *)(ie + 1);
-	*p++ = 0x0c;
-	*p++ = 0x12;
-	*p++ = 0x18;
-	*p++ = 0x24;
-	*p++ = 0x30;
-	*p++ = 0x48;
-	*p++ = 0x60;
-	*p++ = 0x6c;
-
-	/* add the channel parameter (ds params) */
-	ie = (ie_t *)p;
-	ie->id = IEID_DSPARAMS;
-	ie->len = 1;
-	p = (char *)(ie + 1);
-	*p++ = g_channel;
-
-#if 0
-	/* add the RM capabilities */
-	ie = (ie_t *)p;
-	ie->id = 0x46; // rm capabilities
-	ie->len = 5;
-	p = (char *)(ie + 1);
-	memset(p, 0xff, ie->len);
-#endif
+	fill_ie(&p, IEID_SSID, g_ssid, g_ssid_len);
+	fill_ie(&p, IEID_RATES, (u_int8_t *)"\x0c\x12\x18\x24\x30\x48\x60\x6c", 8);
+	fill_ie(&p, IEID_DSPARAMS, &g_channel, 1);
+	//fill_ie(&p, IEID_RMCAPS, "\xff\xff\xff\xff\xff", 5);
 
 	if (!send_packet(sock, pkt, p - pkt, d11))
 		return 0;
@@ -766,41 +719,20 @@ int send_probe_response(int sock, u_int8_t *dst_mac)
  */
 int send_auth_response(int sock, u_int8_t *dst_mac)
 {
-	char pkt[4096] = { 0 }, *p;
-	radiotap_t *prt;
+	u_int8_t pkt[4096] = { 0 }, *p = pkt;
 	dot11_frame_t *d11;
 	auth_t *auth;
 
-	/* fill out the radio tap header */
-	prt = (radiotap_t *)pkt;
-	prt->it_version = 0;
-	prt->it_len = sizeof(*prt) + 1;
-	prt->it_present = (1 << IEEE80211_RADIOTAP_RATE);
-
-	/* add the data rate (part of the radiotap header) */
-	p = (char *)(prt + 1);
-	*p++ = 0x4;  // 2Mb/s
-
-	/* add the 802.11 header */
+	fill_radiotap(&p);
 	d11 = (dot11_frame_t *)p;
-	//d11->version = 0;
-	d11->type = T_MGMT;
-	d11->subtype = ST_AUTH;
-	//d11->ctrlflags = 0;
-	//d11->duration = 0;
-	memcpy(d11->dst_mac, dst_mac, ETH_ALEN);
-	memcpy(d11->src_mac, g_bssid, ETH_ALEN);
-	memcpy(d11->bssid, g_bssid, ETH_ALEN);
-	d11->seq = get_sequence();
-	//d11->frag = 0;
-	p = (char *)(d11 + 1);
+	fill_dot11(&p, T_MGMT, ST_AUTH, dst_mac);
 
 	/* add the auth info */
 	auth = (auth_t *)p;
 	//auth->algorithm = 0; // AUTH_OPEN;
 	auth->seq = 2; // should be responding to auth seq 1
 	//auth->status = 0; // successful
-	p = (char *)(auth + 1);
+	p = (u_int8_t *)(auth + 1);
 
 	if (!send_packet(sock, pkt, p - pkt, d11))
 		return 0;
@@ -815,56 +747,22 @@ int send_auth_response(int sock, u_int8_t *dst_mac)
  */
 int send_assoc_response(int sock, u_int8_t *dst_mac)
 {
-	char pkt[4096] = { 0 }, *p;
-	radiotap_t *prt;
+	u_int8_t pkt[4096] = { 0 }, *p = pkt;
 	dot11_frame_t *d11;
 	assoc_resp_t *assoc;
-	ie_t *ie;
 
-	/* fill out the radio tap header */
-	prt = (radiotap_t *)pkt;
-	prt->it_version = 0;
-	prt->it_len = sizeof(*prt) + 1;
-	prt->it_present = (1 << IEEE80211_RADIOTAP_RATE);
-
-	/* add the data rate (part of the radiotap header) */
-	p = (char *)(prt + 1);
-	*p++ = 0x4;  // 2Mb/s
-
-	/* add the 802.11 header */
+	fill_radiotap(&p);
 	d11 = (dot11_frame_t *)p;
-	//d11->version = 0;
-	d11->type = T_MGMT;
-	d11->subtype = ST_ASSOC_RESP;
-	//d11->ctrlflags = 0;
-	//d11->duration = 0;
-	memcpy(d11->dst_mac, dst_mac, ETH_ALEN);
-	memcpy(d11->src_mac, g_bssid, ETH_ALEN);
-	memcpy(d11->bssid, g_bssid, ETH_ALEN);
-	d11->seq = get_sequence();
-	//d11->frag = 0;
-	p = (char *)(d11 + 1);
+	fill_dot11(&p, T_MGMT, ST_ASSOC_RESP, dst_mac);
 
 	/* add the assoc info */
 	assoc = (assoc_resp_t *)p;
 	assoc->caps = 1;
 	//assoc->status = 0; // successful
 	assoc->id = 1;
-	p = (char *)(assoc + 1);
+	p = (u_int8_t *)(assoc + 1);
 
-	/* add the supported rate IE */
-	ie = (ie_t *)p;
-	ie->id = IEID_RATES;
-	ie->len = 8; // # of rates supported
-	p = (char *)(ie + 1);
-	*p++ = 0x0c;
-	*p++ = 0x12;
-	*p++ = 0x18;
-	*p++ = 0x24;
-	*p++ = 0x30;
-	*p++ = 0x48;
-	*p++ = 0x60;
-	*p++ = 0x6c;
+	fill_ie(&p, IEID_RATES, (u_int8_t *)"\x0c\x12\x18\x24\x30\x48\x60\x6c", 8);
 
 	if (!send_packet(sock, pkt, p - pkt, d11))
 		return 0;
@@ -877,8 +775,7 @@ int send_assoc_response(int sock, u_int8_t *dst_mac)
 /*
  * process the information elements looking for an SSID
  */
-ie_t *
-get_ssid_ie(const u_int8_t *data, u_int32_t left)
+ie_t *get_ssid_ie(const u_int8_t *data, u_int32_t left)
 {
 	ie_t *ie;
 	const u_int8_t *p = data;
