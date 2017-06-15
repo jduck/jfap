@@ -43,6 +43,8 @@
 #define ST_BEACON 8
 #define ST_AUTH 11
 
+#define CF_RETRY 8
+
 #define IEID_SSID 0
 #define IEID_RATES 1
 #define IEID_DSPARAMS 3
@@ -77,8 +79,20 @@ u_int8_t g_ssid[32];
 u_int8_t g_ssid_len;
 u_int8_t g_channel = DEFAULT_CHANNEL;
 
+u_int8_t g_pkt[4096];
+size_t g_pkt_len = 0;
+
 /* global options */
 int g_send_beacons = 0;
+
+typedef enum {
+	S_AWAITING_PROBE_REQ = 0,
+	S_SENT_PROBE_RESP = 1,
+	S_SENT_AUTH = 2,
+	S_SENT_ASSOC_RESP = 3
+} state_t;
+
+state_t g_state = S_AWAITING_PROBE_REQ;
 
 
 struct ieee80211_radiotap_header {
@@ -132,6 +146,8 @@ struct ieee80211_assoc_response {
 typedef struct ieee80211_assoc_response assoc_resp_t;
 
 
+void timespec_diff(struct timespec *newer, struct timespec *older, struct timespec *diff);
+
 char *mac_string(u_int8_t *mac);
 void hexdump(const u_char *ptr, u_int len);
 
@@ -174,11 +190,12 @@ int main(int argc, char *argv[])
 	const u_char *inbuf = NULL;
 	int pcret;
 
-	struct timespec last_beacon;
+	struct timespec last_beacon, last_retransmit;
 
 
 	/* initalize stuff */
 	memset(&last_beacon, 0, sizeof(last_beacon));
+	memset(&last_retransmit, 0, sizeof(last_retransmit));
 	srand(getpid());
 
 	argv0 = "jfap";
@@ -318,6 +335,34 @@ int main(int argc, char *argv[])
 			if (!memcmp(d11->src_mac, g_bssid, ETH_ALEN))
 				continue;
 
+			/* handle retransmissions */
+			if (d11->ctrlflags & CF_RETRY) {
+				/* if we have a packet that we tried to send, re-send it now */
+				if (g_pkt_len > 0) {
+					/* don't retransmit too fast */
+					struct timespec now, diff;
+
+					if (clock_gettime(CLOCK_REALTIME, &now)) {
+						perror("[!] gettimeofday failed");
+						break;
+					}
+
+					/* see how long since the last retransmit. if it's been
+					 * long enough, send again */
+					timespec_diff(&now, &last_retransmit, &diff);
+
+					if (diff.tv_sec > 0 || diff.tv_nsec > BEACON_INTERVAL * 100000) {
+						printf("[*] Re-transmitting...\n");
+						if (send(sock, g_pkt, g_pkt_len, 0) == -1) {
+							perror("[!] Unable to re-send packet!");
+							/* just try again later */
+						}
+						last_retransmit = now;
+					}
+				}
+				continue;
+			}
+
 			/* prepare further processing */
 			data = (const u_char *)(d11 + 1);
 			left -= sizeof(*d11);
@@ -349,11 +394,13 @@ int main(int argc, char *argv[])
 							printf("[*] (%s) Probe request for our BSSID and SSID, replying...\n", mac_string(d11->src_mac));
 							if (!send_probe_response(sock, d11->src_mac))
 								continue;
+							g_state = S_SENT_PROBE_RESP;
 						}
 #else
 						printf("[*] (%s) Probe request for our BSSID, replying...\n", mac_string(d11->src_mac));
 						if (!send_probe_response(sock, d11->src_mac))
 							continue;
+						g_state = S_SENT_PROBE_RESP;
 #endif
 					} else if (!memcmp(d11->dst_mac, IEEE80211_BROADCAST_ADDR, ETH_ALEN)) {
 						/* broadcast probe request - discovery? */
@@ -384,6 +431,7 @@ int main(int argc, char *argv[])
 						printf("[*] (%s) Auth request received, replying...\n", mac_string(d11->src_mac));
 						if (!send_auth_response(sock, d11->src_mac))
 							continue;
+						g_state = S_SENT_AUTH;
 					} else {
 						printf("[*] (%s) Auth request for another BSSID received, NOT replying...\n", mac_string(d11->src_mac));
 						printf("    DST MAC: %s\n", mac_string(d11->dst_mac));
@@ -395,6 +443,7 @@ int main(int argc, char *argv[])
 						printf("[*] (%s) Association request received, replying...\n", mac_string(d11->src_mac));
 						if (!send_assoc_response(sock, d11->src_mac))
 							continue;
+						g_state = S_SENT_ASSOC_RESP;
 					} else {
 						printf("[*] (%s) Association request for another BSSID received, replying...\n", mac_string(d11->src_mac));
 						printf("    DST MAC: %s\n", mac_string(d11->dst_mac));
@@ -434,12 +483,7 @@ int main(int argc, char *argv[])
 
 				/* see how long since the last beacon. if it's been long enough,
 				 * send another */
-				diff.tv_sec = now.tv_sec - last_beacon.tv_sec;
-				diff.tv_nsec = now.tv_nsec - last_beacon.tv_nsec;
-				if (diff.tv_nsec < 0) {
-					--diff.tv_sec;
-					diff.tv_nsec += 1000000000;
-				}
+				timespec_diff(&now, &last_beacon, &diff);
 				if (diff.tv_sec > 0 || diff.tv_nsec > BEACON_INTERVAL * 1000000) {
 #ifdef DEBUG_BEACON_INTERVAL
 					printf("%lu.%lu - %lu.%lu = %lu.%lu (vs %lu)\n",
@@ -561,30 +605,16 @@ int open_raw_socket(char *iface)
 /*
  * send an 802.11 packet with a bunch of re-transmissions for the fuck of it
  */
-int send_packet(int sock, u_int8_t *pkt, size_t len, dot11_frame_t *d11)
+int send_packet(int sock, dot11_frame_t *d11)
 {
-#ifdef RETRANSMIT
-	int i;
-#endif
-
-	if (send(sock, pkt, len, 0) == -1) {
-		perror("[!] Unable to send beacon!");
+	if (send(sock, g_pkt, g_pkt_len, 0) == -1) {
+		perror("[!] Unable to send packet!");
 		return 0;
 	}
 
-#ifdef RETRANSMIT
 	/* set the retransmit flag on the 802.11 header */
-	d11->ctrlflags |= 8; // retry
+	d11->ctrlflags |= CF_RETRY;
 
-	/* send it again.. */
-	for (i = 0; i < 10; i++) {
-		usleep(100);
-		if (send(sock, pkt, len, 0) == -1) {
-			perror("[!] Unable to send beacon!");
-			return 0;
-		}
-	}
-#endif
 	return 1;
 }
 
@@ -619,16 +649,16 @@ void fill_dot11(u_int8_t **ppkt, u_int8_t type, u_int8_t subtype, u_int8_t *dst_
 	dot11_frame_t *d11 = (dot11_frame_t *)(*ppkt);
 
 	/* add the 802.11 header */
-	//d11->version = 0;
+	d11->version = 0;
 	d11->type = type;
 	d11->subtype = subtype;
-	//d11->ctrlflags = 0;
-	//d11->duration = 0;
+	d11->ctrlflags = 0;
+	d11->duration = 0;
 	memcpy(d11->dst_mac, dst_mac, ETH_ALEN);
 	memcpy(d11->src_mac, g_bssid, ETH_ALEN);
 	memcpy(d11->bssid, g_bssid, ETH_ALEN);
 	d11->seq = get_sequence();
-	//d11->frag = 0;
+	d11->frag = 0;
 
 	*ppkt += sizeof(dot11_frame_t);
 }
@@ -667,7 +697,7 @@ int send_beacon(int sock)
 
 	/* add the beacon info */
 	bc = (beacon_t *)p;
-	//bc->timestamp = 0;
+	bc->timestamp = 0;
 	bc->interval = BEACON_INTERVAL;
 	bc->caps = 1; // we are an AP ;-)
 	p = (u_int8_t *)(bc + 1);
@@ -692,7 +722,7 @@ int send_beacon(int sock)
  */
 int send_probe_response(int sock, u_int8_t *dst_mac)
 {
-	u_int8_t pkt[4096] = { 0 }, *p = pkt;
+	u_int8_t *p = g_pkt;
 	dot11_frame_t *d11;
 	beacon_t *bc;
 
@@ -702,7 +732,7 @@ int send_probe_response(int sock, u_int8_t *dst_mac)
 
 	/* add the beacon info */
 	bc = (beacon_t *)p;
-	//bc->timestamp = 0;
+	bc->timestamp = 0;
 	bc->interval = BEACON_INTERVAL;
 	bc->caps = 1; // we are an AP ;-)
 	p = (u_int8_t *)(bc + 1);
@@ -711,7 +741,8 @@ int send_probe_response(int sock, u_int8_t *dst_mac)
 	fill_ie(&p, IEID_RATES, (u_int8_t *)"\x0c\x12\x18\x24\x30\x48\x60\x6c", 8);
 	fill_ie(&p, IEID_DSPARAMS, &g_channel, 1);
 
-	if (!send_packet(sock, pkt, p - pkt, d11))
+	g_pkt_len = p - g_pkt;
+	if (!send_packet(sock, d11))
 		return 0;
 
 	//printf("[*] Sent probe response to %s!\n", mac_string(dst_mac));
@@ -724,7 +755,7 @@ int send_probe_response(int sock, u_int8_t *dst_mac)
  */
 int send_auth_response(int sock, u_int8_t *dst_mac)
 {
-	u_int8_t pkt[4096] = { 0 }, *p = pkt;
+	u_int8_t *p = g_pkt;
 	dot11_frame_t *d11;
 	auth_t *auth;
 
@@ -734,12 +765,13 @@ int send_auth_response(int sock, u_int8_t *dst_mac)
 
 	/* add the auth info */
 	auth = (auth_t *)p;
-	//auth->algorithm = 0; // AUTH_OPEN;
+	auth->algorithm = 0; // AUTH_OPEN;
 	auth->seq = 2; // should be responding to auth seq 1
-	//auth->status = 0; // successful
+	auth->status = 0; // successful
 	p = (u_int8_t *)(auth + 1);
 
-	if (!send_packet(sock, pkt, p - pkt, d11))
+	g_pkt_len = p - g_pkt;
+	if (!send_packet(sock, d11))
 		return 0;
 
 	//printf("[*] Sent auth response to %s!\n", mac_string(dst_mac));
@@ -752,7 +784,7 @@ int send_auth_response(int sock, u_int8_t *dst_mac)
  */
 int send_assoc_response(int sock, u_int8_t *dst_mac)
 {
-	u_int8_t pkt[4096] = { 0 }, *p = pkt;
+	u_int8_t *p = g_pkt;
 	dot11_frame_t *d11;
 	assoc_resp_t *assoc;
 
@@ -763,13 +795,14 @@ int send_assoc_response(int sock, u_int8_t *dst_mac)
 	/* add the assoc info */
 	assoc = (assoc_resp_t *)p;
 	assoc->caps = 1;
-	//assoc->status = 0; // successful
+	assoc->status = 0; // successful
 	assoc->id = 1;
 	p = (u_int8_t *)(assoc + 1);
 
 	fill_ie(&p, IEID_RATES, (u_int8_t *)"\x0c\x12\x18\x24\x30\x48\x60\x6c", 8);
 
-	if (!send_packet(sock, pkt, p - pkt, d11))
+	g_pkt_len = p - g_pkt;
+	if (!send_packet(sock, d11))
 		return 0;
 
 	//printf("[*] Sent association response to %s!\n", mac_string(dst_mac));
@@ -869,4 +902,18 @@ u_int16_t get_sequence(void)
 	if (sequence > 4095)
 		sequence = 0;
 	return ret;
+}
+
+
+/*
+ * diff two timespec values
+ */
+void timespec_diff(struct timespec *newer, struct timespec *older, struct timespec *diff)
+{
+	diff->tv_sec = newer->tv_sec - older->tv_sec;
+	diff->tv_nsec = newer->tv_nsec - older->tv_nsec;
+	if (diff->tv_nsec < 0) {
+		--diff->tv_sec;
+		diff->tv_nsec += 1000000000;
+	}
 }
