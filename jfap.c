@@ -94,7 +94,8 @@ typedef enum {
 	S_AWAITING_PROBE_REQ = 0,
 	S_SENT_PROBE_RESP = 1,
 	S_SENT_AUTH = 2,
-	S_SENT_ASSOC_RESP = 3
+	S_SENT_ASSOC_RESP = 3,
+	S_ESTABLISHED = 4
 } state_t;
 
 state_t g_state = S_AWAITING_PROBE_REQ;
@@ -399,9 +400,12 @@ int handle_packet(const u_char *data, u_int32_t left)
 
 	} /* type check */
 
-	// XXX: TODO: recognize that our client successfully associated
 	else if (d11->type == T_DATA) {
-#ifdef DEBUG_DATA
+		g_state = S_ESTABLISHED;
+		g_pkt_len = 0;
+#ifndef DEBUG_DATA
+		printf("[*] Station successfully associated and is sending data...\n");
+#else
 		printf("[*] Unhandled 802.11 packet ver:%u type:%s subtype:%s%s\n",
 				d11->version, dot11_types[d11->type],
 				dot11_subtypes[d11->type][d11->subtype],
