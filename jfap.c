@@ -328,22 +328,22 @@ int main(int argc, char *argv[])
 					/* ignore beacons */
 					continue;
 				} else if (d11->subtype == ST_PROBE_REQ) {
-					ie_t *ie = get_ssid_ie(data, left);
+					ie_t *ie;
 					char ssid_req[32] = { 0 };
 
-					if (!ie)
+					if (!(ie = get_ssid_ie(data, left))) {
+						printf("[-] Probe request with no SSID encountered!\n");
 						continue;
+					}
 					if (ie->len > 0) {
 						if (ie->len > sizeof(ssid_req) - 1)
 							strncpy(ssid_req, (char *)ie->data, sizeof(ssid_req) - 1);
 						else
 							strncpy(ssid_req, (char *)ie->data, ie->len);
-						printf("[*] (%s) Probe request for SSID (%u bytes): \"%s\"\n", mac_string(d11->src_mac), ie->len, ssid_req);
 					}
 
 					if (!memcmp(d11->dst_mac, g_bssid, ETH_ALEN)) {
-#define CHECK_SSID
-#ifdef CHECK_SSID
+#ifndef DONT_CHECK_SSID
 						/* for us!? */
 						if (!strcmp(ssid_req, (char *)g_ssid)) {
 							printf("[*] (%s) Probe request for our BSSID and SSID, replying...\n", mac_string(d11->src_mac));
@@ -371,6 +371,13 @@ int main(int argc, char *argv[])
 								continue;
 						}
 					} /* mac check */
+					else {
+						if (ie->len > 0) {
+							printf("[*] (%s) Unhandled probe request for SSID (%u bytes): \"%s\"\n", mac_string(d11->src_mac), ie->len, ssid_req);
+						} else {
+							printf("[*] (%s) Unhandled probe request for empty SSID\n", mac_string(d11->src_mac));
+						}
+					}
 					continue;
 				} else if (d11->subtype == ST_AUTH) {
 					if (!memcmp(d11->dst_mac, g_bssid, ETH_ALEN)) {
