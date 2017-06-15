@@ -668,7 +668,6 @@ int send_beacon(int sock)
 	fill_ie(&p, IEID_SSID, g_ssid, g_ssid_len);
 	fill_ie(&p, IEID_RATES, (u_int8_t *)"\x0c\x12\x18\x24\x30\x48\x60\x6c", 8);
 	fill_ie(&p, IEID_DSPARAMS, &g_channel, 1);
-	//fill_ie(&p, IEID_RMCAPS, "\xff\xff\xff\xff\xff", 5);
 
 	/* don't retransmit beacons */
 	if (send(sock, pkt, p - pkt, 0) == -1) {
@@ -704,7 +703,6 @@ int send_probe_response(int sock, u_int8_t *dst_mac)
 	fill_ie(&p, IEID_SSID, g_ssid, g_ssid_len);
 	fill_ie(&p, IEID_RATES, (u_int8_t *)"\x0c\x12\x18\x24\x30\x48\x60\x6c", 8);
 	fill_ie(&p, IEID_DSPARAMS, &g_channel, 1);
-	//fill_ie(&p, IEID_RMCAPS, "\xff\xff\xff\xff\xff", 5);
 
 	if (!send_packet(sock, pkt, p - pkt, d11))
 		return 0;
