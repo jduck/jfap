@@ -157,6 +157,9 @@ u_int16_t get_sequence(void);
 int start_pcap(pcap_t **pcap, char *iface);
 int open_raw_socket(char *iface);
 
+int process_radiotap(const u_char **ppkt, u_int32_t *pleft);
+dot11_frame_t *get_dot11_frame(const u_char **ppkt, u_int32_t *pleft);
+
 int send_beacon(int sock);
 int send_probe_response(int sock, u_int8_t *dst_mac);
 int send_auth_response(int sock, u_int8_t *dst_mac);
@@ -285,13 +288,8 @@ int main(int argc, char *argv[])
 
 		/* if we got a packet, process it */
 		if (pcret == 1) {
-			radiotap_t *prt = (radiotap_t *)inbuf;
-#ifdef DEBUG_RADIOTAP_PRESENT
-			int idx = 0;
-			u_int32_t *pu = &prt->it_present;
-#endif
-			const u_char *data;
-			u_int32_t left;
+			const u_char *data = inbuf;
+			u_int32_t left = pchdr->caplen;
 			dot11_frame_t *d11;
 
 			/* check the length against the capture length */
@@ -299,37 +297,10 @@ int main(int argc, char *argv[])
 				fprintf(stderr, "[-] WARNING: truncated frame! (len: %lu > caplen: %lu)\n",
 						(ulong)pchdr->len, (ulong)pchdr->caplen);
 
-			/* process the radiotap header */
-#ifdef DEBUG_RADIOTAP
-			printf("[*] got RADIOTAP packet - ver:%u pad:%u len:%u\n",
-					prt->it_version, prt->it_pad, prt->it_len);
-#endif
-#ifdef DEBUG_RADIOTAP_PRESENT
-			printf("    present[%u]: 0x%lx\n", idx, (ulong)prt->it_present);
-			while (prt->it_present & 0x1) {
-				++idx;
-				printf("    present[%u]: 0x%lx\n", idx, (ulong)pu[idx]);
-			}
-#endif
-			if (prt->it_len >= pchdr->caplen) {
-				fprintf(stderr, "[!] captured frame has no data?\n");
+			if (!process_radiotap(&data, &left))
 				continue;
-			}
-
-			/* prepare the reset of the data for processing */
-			data = inbuf + prt->it_len;
-			left = pchdr->caplen - prt->it_len;
-
-			/* process the 802.11 frame */
-			if (left < sizeof(*d11)) {
-#ifdef DEBUG_DOT11_SHORT_PKTS
-				fprintf(stderr, "[-] Not enough data for 802.11 frame header!\n");
-				printf("bytes left: %u\n", left);
-				hexdump(data, left);
-#endif
+			if (!(d11 = get_dot11_frame(&data, &left)))
 				continue;
-			}
-			d11 = (dot11_frame_t *)data;
 
 			/* ignore anything from us */
 			if (!memcmp(d11->src_mac, g_bssid, ETH_ALEN))
@@ -460,7 +431,7 @@ int main(int argc, char *argv[])
 						d11->version, dot11_types[d11->type],
 						dot11_subtypes[d11->type][d11->subtype],
 						(d11->subtype >> 3) ? " (QoS)" : "");
-				hexdump(data, pchdr->caplen - prt->it_len);
+				hexdump(data, left);
 #endif
 				continue;
 			}
@@ -469,7 +440,7 @@ int main(int argc, char *argv[])
 			printf("[*] Unhandled 802.11 packet ver:%u type:%s subtype:%s\n",
 					d11->version, dot11_types[d11->type],
 					dot11_subtypes[d11->type][d11->subtype]);
-			hexdump(data, pchdr->caplen - prt->it_len);
+			hexdump(data, left);
 #endif
 		} else {
 			if (g_send_beacons) {
@@ -599,6 +570,69 @@ int open_raw_socket(char *iface)
 		return -1;
 	}
 	return sock;
+}
+
+
+/*
+ * process the radiotap header
+ */
+int process_radiotap(const u_char **ppkt, u_int32_t *pleft)
+{
+	const u_char *p = *ppkt;
+	radiotap_t *prt = (radiotap_t *)p;
+#ifdef DEBUG_RADIOTAP_PRESENT
+	int idx = 0;
+	u_int32_t *pu = &prt->it_present;
+#endif
+
+	if (*pleft < sizeof(radiotap_t)) {
+		fprintf(stderr, "[!] Packet doesn't have enough data for a radiotap header?!\n");
+		return 0;
+	}
+
+#ifdef DEBUG_RADIOTAP
+	printf("[*] got RADIOTAP packet - ver:%u pad:%u len:%u\n",
+			prt->it_version, prt->it_pad, prt->it_len);
+#endif
+	if (*pleft <= prt->it_len) {
+		fprintf(stderr, "[!] Packet is too small to contain the radiotap header and data\n");
+		return 0;
+	}
+
+#ifdef DEBUG_RADIOTAP_PRESENT
+	printf("    present[%u]: 0x%lx\n", idx, (ulong)prt->it_present);
+	while (prt->it_present & 0x1) {
+		++idx;
+		printf("    present[%u]: 0x%lx\n", idx, (ulong)pu[idx]);
+	}
+#endif
+
+	*ppkt = p + prt->it_len;
+	*pleft -= prt->it_len;
+
+	return 1;
+}
+
+
+/*
+ * process the 802.11 frame
+ */
+dot11_frame_t *get_dot11_frame(const u_char **ppkt, u_int32_t *pleft)
+{
+	const u_char *p = *ppkt;
+
+	if (*pleft < sizeof(dot11_frame_t)) {
+#ifdef DEBUG_DOT11_SHORT_PKTS
+		fprintf(stderr, "[-] Not enough data for 802.11 frame header (bytes left: %u)!\n", *pleft);
+		hexdump(p, *pleft);
+#endif
+		return NULL;
+	}
+
+	*ppkt = p + sizeof(dot11_frame_t);
+	*pleft -= sizeof(dot11_frame_t);
+
+	return (dot11_frame_t *)p;
 }
 
 
