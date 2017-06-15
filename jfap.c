@@ -288,6 +288,11 @@ int main(int argc, char *argv[])
 	while (1) {
 		pcret = pcap_next_ex(pch, &pchdr, &inbuf);
 
+		if (pcret == -1) {
+			pcap_perror(pch, "[!] Failed to get a packet");
+			continue;
+		}
+
 		/* if we got a packet, process it */
 		if (pcret == 1) {
 			const u_char *data = inbuf;
