@@ -75,6 +75,7 @@ const char *dot11_subtypes[4][16] = {
 };
 
 int g_sock;
+char g_iface[64];
 
 u_int8_t g_bssid[ETH_ALEN];
 u_int8_t g_ssid[32];
@@ -83,9 +84,11 @@ u_int8_t g_channel = DEFAULT_CHANNEL;
 
 u_int8_t g_pkt[4096];
 size_t g_pkt_len = 0;
+struct timespec last_retransmit;
 
 /* global options */
 int g_send_beacons = 0;
+struct timespec last_beacon;
 
 typedef enum {
 	S_AWAITING_PROBE_REQ = 0,
@@ -140,6 +143,12 @@ struct ieee80211_authentication {
 } __attribute__((__packed__));
 typedef struct ieee80211_authentication auth_t;
 
+struct ieee80211_assoc_request {
+	u_int16_t caps;
+	u_int16_t interval;
+} __attribute__((__packed__));
+typedef struct ieee80211_assoc_request assoc_req_t;
+
 struct ieee80211_assoc_response {
 	u_int16_t caps;
 	u_int16_t status;
@@ -152,15 +161,22 @@ void timespec_diff(struct timespec *newer, struct timespec *older, struct timesp
 
 char *mac_string(u_int8_t *mac);
 void hexdump(const u_char *ptr, u_int len);
+char *ssid_string(ie_t *ie);
 
 ie_t *get_ssid_ie(const u_int8_t *data, u_int32_t left);
 u_int16_t get_sequence(void);
 
-int start_pcap(pcap_t **pcap, char *iface);
-int open_raw_socket(char *iface);
+int start_pcap(pcap_t **pcap);
+int open_raw_socket(void);
+
+int handle_packet(const u_char *data, u_int32_t left);
+int process_periodic_tasks(void);
 
 int process_radiotap(const u_char **ppkt, u_int32_t *pleft);
 dot11_frame_t *get_dot11_frame(const u_char **ppkt, u_int32_t *pleft);
+int process_probe_request(dot11_frame_t *d11, const u_char *data, u_int32_t left);
+int process_auth_request(dot11_frame_t *d11, const u_char *data, u_int32_t left);
+int process_assoc_request(dot11_frame_t *d11, const u_char *data, u_int32_t left);
 
 int send_beacon();
 int send_probe_response(u_int8_t *dst_mac);
@@ -174,9 +190,9 @@ void usage(char *argv0)
 	fprintf(stderr, "\nsupported options:\n\n"
 			"-b             send beacons regularly (default: off)\n"
 			"-c <channel>   use the specified channel (default: %d)\n"
-			"-i <interface> interface to use for monitoring/injection (default: mon0)\n"
+			"-i <interface> interface to use for monitoring/injection (default: %s)\n"
 			"-m <mac addr>  use the specified mac address (default: from phys)\n"
-			, DEFAULT_CHANNEL);
+			, DEFAULT_CHANNEL, g_iface);
 }
 
 
@@ -187,21 +203,15 @@ void usage(char *argv0)
 int main(int argc, char *argv[])
 {
 	char *argv0;
-	char iface[64] = { 0 };
 	int ret = 0, c;
 	pcap_t *pch = NULL;
-
 	struct pcap_pkthdr *pchdr = NULL;
 	const u_char *inbuf = NULL;
 	int pcret;
 
-	struct timespec last_beacon, last_retransmit;
-
-
 	/* initalize stuff */
-	memset(&last_beacon, 0, sizeof(last_beacon));
-	memset(&last_retransmit, 0, sizeof(last_retransmit));
 	srand(getpid());
+	strcpy(g_iface, "mon0");
 
 	argv0 = "jfap";
 	if (argv && argc > 0 && argv[0])
@@ -211,8 +221,6 @@ int main(int argc, char *argv[])
 		usage(argv0);
 		return 1;
 	}
-
-	strcpy(iface, "mon0");
 
 	while ((c = getopt(argc, argv, "bc:i:m:")) != -1) {
 		switch (c) {
@@ -238,7 +246,7 @@ int main(int argc, char *argv[])
 				break;
 
 			case 'i':
-				strncpy(iface, optarg, sizeof(iface) - 1);
+				strncpy(g_iface, optarg, sizeof(g_iface) - 1);
 				break;
 
 			case 'm':
@@ -276,18 +284,16 @@ int main(int argc, char *argv[])
 	g_ssid_len = strlen((char *)g_ssid);
 
 	printf("[*] Starting access point with SSID \"%s\" via interface \"%s\"\n",
-			g_ssid, iface);
+			g_ssid, g_iface);
 
-	if (!start_pcap(&pch, iface))
+	if (!start_pcap(&pch))
 		return 1;
 
-	g_sock = open_raw_socket(iface);
-	if (g_sock == -1)
+	if ((g_sock = open_raw_socket()) == -1)
 		return 1;
 
 	while (1) {
 		pcret = pcap_next_ex(pch, &pchdr, &inbuf);
-
 		if (pcret == -1) {
 			pcap_perror(pch, "[!] Failed to get a packet");
 			continue;
@@ -295,187 +301,160 @@ int main(int argc, char *argv[])
 
 		/* if we got a packet, process it */
 		if (pcret == 1) {
-			const u_char *data = inbuf;
-			u_int32_t left = pchdr->caplen;
-			dot11_frame_t *d11;
-
 			/* check the length against the capture length */
 			if (pchdr->len > pchdr->caplen)
 				fprintf(stderr, "[-] WARNING: truncated frame! (len: %lu > caplen: %lu)\n",
 						(ulong)pchdr->len, (ulong)pchdr->caplen);
 
-			if (!process_radiotap(&data, &left))
-				continue;
-			if (!(d11 = get_dot11_frame(&data, &left)))
-				continue;
-
-			/* ignore anything from us */
-			if (!memcmp(d11->src_mac, g_bssid, ETH_ALEN))
-				continue;
-
-			/* handle retransmissions */
-			if (d11->ctrlflags & CF_RETRY) {
-				/* if we have a packet that we tried to send, re-send it now */
-				if (g_pkt_len > 0) {
-					/* don't retransmit too fast */
-					struct timespec now, diff;
-
-					if (clock_gettime(CLOCK_REALTIME, &now)) {
-						perror("[!] gettimeofday failed");
-						break;
-					}
-
-					/* see how long since the last retransmit. if it's been
-					 * long enough, send again */
-					timespec_diff(&now, &last_retransmit, &diff);
-
-					if (diff.tv_sec > 0 || diff.tv_nsec > BEACON_INTERVAL * 100000) {
-						printf("[*] Re-transmitting...\n");
-						if (send(g_sock, g_pkt, g_pkt_len, 0) == -1) {
-							perror("[!] Unable to re-send packet!");
-							/* just try again later */
-						}
-						last_retransmit = now;
-					}
-				}
-				continue;
+			if (!handle_packet(inbuf, pchdr->caplen)) {
+				ret = 1;
+				break;
 			}
+		}
 
-			/* if it's a probe request, see if it's for us */
-			if (d11->type == T_MGMT) {
-				if (d11->subtype == ST_BEACON) {
-					/* ignore beacons */
-					continue;
-				} else if (d11->subtype == ST_PROBE_REQ) {
-					ie_t *ie;
-					char ssid_req[32] = { 0 };
-
-					if (!(ie = get_ssid_ie(data, left))) {
-						printf("[-] Probe request with no SSID encountered!\n");
-						continue;
-					}
-					if (ie->len > 0) {
-						if (ie->len > sizeof(ssid_req) - 1)
-							strncpy(ssid_req, (char *)ie->data, sizeof(ssid_req) - 1);
-						else
-							strncpy(ssid_req, (char *)ie->data, ie->len);
-					}
-
-					if (!memcmp(d11->dst_mac, g_bssid, ETH_ALEN)) {
-#ifndef DONT_CHECK_SSID
-						/* for us!? */
-						if (!strcmp(ssid_req, (char *)g_ssid)) {
-							printf("[*] (%s) Probe request for our BSSID and SSID, replying...\n", mac_string(d11->src_mac));
-							if (!send_probe_response(d11->src_mac))
-								continue;
-							g_state = S_SENT_PROBE_RESP;
-						}
-#else
-						printf("[*] (%s) Probe request for our BSSID, replying...\n", mac_string(d11->src_mac));
-						if (!send_probe_response(d11->src_mac))
-							continue;
-						g_state = S_SENT_PROBE_RESP;
-#endif
-					} else if (!memcmp(d11->dst_mac, IEEE80211_BROADCAST_ADDR, ETH_ALEN)) {
-						/* broadcast probe request - discovery? */
-						if (ie && ie->len > 0) {
-							if (!strcmp(ssid_req, (char *)g_ssid)) {
-								printf("[*] (%s) Broadcast probe request for our SSID \"%s\" received, replying...\n", mac_string(d11->src_mac), ssid_req);
-								if (!send_probe_response(d11->src_mac))
-									continue;
-							} else {
-								printf("[*] (%s) Broadcast probe request for \"%s\" received, NOT replying...\n", mac_string(d11->src_mac), ssid_req);
-							}
-						} else {
-							printf("[*] (%s) Broadcast probe request received, replying...\n", mac_string(d11->src_mac));
-							if (!send_probe_response(d11->src_mac))
-								continue;
-						}
-					} /* mac check */
-					else {
-						if (ie->len > 0) {
-							printf("[*] (%s) Unhandled probe request for SSID (%u bytes): \"%s\"\n", mac_string(d11->src_mac), ie->len, ssid_req);
-						} else {
-							printf("[*] (%s) Unhandled probe request for empty SSID\n", mac_string(d11->src_mac));
-						}
-					}
-					continue;
-				} else if (d11->subtype == ST_AUTH) {
-					if (!memcmp(d11->dst_mac, g_bssid, ETH_ALEN)) {
-						printf("[*] (%s) Auth request received, replying...\n", mac_string(d11->src_mac));
-						if (!send_auth_response(d11->src_mac))
-							continue;
-						g_state = S_SENT_AUTH;
-					} else {
-						printf("[*] (%s) Auth request for another BSSID received, NOT replying...\n", mac_string(d11->src_mac));
-						printf("    DST MAC: %s\n", mac_string(d11->dst_mac));
-						printf("    BSSID: %s\n", mac_string(d11->bssid));
-					}
-					continue;
-				} else if (d11->subtype == ST_ASSOC_REQ) {
-					if (!memcmp(d11->dst_mac, g_bssid, ETH_ALEN)) {
-						printf("[*] (%s) Association request received, replying...\n", mac_string(d11->src_mac));
-						if (!send_assoc_response(d11->src_mac))
-							continue;
-						g_state = S_SENT_ASSOC_RESP;
-					} else {
-						printf("[*] (%s) Association request for another BSSID received, replying...\n", mac_string(d11->src_mac));
-						printf("    DST MAC: %s\n", mac_string(d11->dst_mac));
-						printf("    BSSID: %s\n", mac_string(d11->bssid));
-					}
-					continue;
-				} /* subtype check */
-			} /* type check */
-
-			/* if we didn't handle this packet somehow, we should display it */
-			else if (d11->type == T_DATA) {
-#ifdef DEBUG_DATA
-				printf("[*] Unhandled 802.11 packet ver:%u type:%s subtype:%s%s\n",
-						d11->version, dot11_types[d11->type],
-						dot11_subtypes[d11->type][d11->subtype],
-						(d11->subtype >> 3) ? " (QoS)" : "");
-				hexdump(data, left);
-#endif
-				continue;
-			}
-
-#ifdef DEBUG_DOT11
-			printf("[*] Unhandled 802.11 packet ver:%u type:%s subtype:%s\n",
-					d11->version, dot11_types[d11->type],
-					dot11_subtypes[d11->type][d11->subtype]);
-			hexdump(data, left);
-#endif
-		} else {
-			if (g_send_beacons) {
-				/* we didn't get a pcket yet, do periodic processing */
-				struct timespec now, diff;
-
-				if (clock_gettime(CLOCK_REALTIME, &now)) {
-					perror("[!] gettimeofday failed");
-					break;
-				}
-
-				/* see how long since the last beacon. if it's been long enough,
-				 * send another */
-				timespec_diff(&now, &last_beacon, &diff);
-				if (diff.tv_sec > 0 || diff.tv_nsec > BEACON_INTERVAL * 1000000) {
-#ifdef DEBUG_BEACON_INTERVAL
-					printf("%lu.%lu - %lu.%lu = %lu.%lu (vs %lu)\n",
-							(ulong)now.tv_sec, now.tv_nsec,
-							(ulong)last_beacon.tv_sec, last_beacon.tv_nsec,
-							(ulong)diff.tv_sec, diff.tv_nsec,
-							(ulong)BEACON_INTERVAL * 1000000);
-#endif
-					if (!send_beacon())
-						break;
-					last_beacon = now;
-				}
-			} /* if (g_send_beacons) */
-		} /* if (got_packet) */
+		if (!process_periodic_tasks()) {
+			ret = 1;
+			break;
+		}
 	}
 
 	pcap_close(pch);
 	return ret;
+}
+
+
+/*
+ * handle a single packet from the wifi nic
+ */
+int handle_packet(const u_char *data, u_int32_t left)
+{
+	dot11_frame_t *d11;
+
+	if (!process_radiotap(&data, &left))
+		return 1; /* treat errors as warnings */
+
+	if (!(d11 = get_dot11_frame(&data, &left)))
+		return 1; /* treat errors as warnings */
+
+	/* ignore anything from us */
+	if (!memcmp(d11->src_mac, g_bssid, ETH_ALEN))
+		return 1; /* finished with this packet */
+
+	/* handle retransmissions */
+	if (d11->ctrlflags & CF_RETRY) {
+		/* if we have a packet that we tried to send, re-send it now */
+		if (g_pkt_len > 0) {
+			/* don't retransmit too fast */
+			struct timespec now, diff;
+
+			if (clock_gettime(CLOCK_REALTIME, &now)) {
+				perror("[!] gettimeofday failed");
+				return 0;
+			}
+
+			/* see how long since the last retransmit. if it's been
+			 * long enough, send again */
+			timespec_diff(&now, &last_retransmit, &diff);
+
+			if (diff.tv_sec > 0 || diff.tv_nsec > BEACON_INTERVAL * 100000) {
+#ifdef DEBUG_RETRANSMIT
+				printf("[*] Re-transmitting...\n");
+#endif
+				if (send(g_sock, g_pkt, g_pkt_len, 0) == -1) {
+					perror("[!] Unable to re-send packet!");
+					/* just try again later */
+				}
+				last_retransmit = now;
+			}
+		}
+
+		/* don't process retransmission packets further */
+		return 1;
+	}
+
+	/* handle broadcast packets - only probe requests */
+	if (d11->type == T_MGMT && d11->subtype == ST_PROBE_REQ) {
+		if (!process_probe_request(d11, data, left))
+			return 1; /* finished with this packet */
+		return 1; /* finished with this packet */
+	}
+
+	/* from here on out, we only handle unicast packets */
+	if (memcmp(d11->dst_mac, g_bssid, ETH_ALEN)) {
+#ifdef DEBUG_IGNORED
+		printf("[*] Ingoring 802.11 packet ver:%u type:%s subtype:%s\n",
+				d11->version, dot11_types[d11->type],
+				dot11_subtypes[d11->type][d11->subtype]);
+		hexdump(data, left);
+#endif
+		return 1; /* finished with this packet */
+	}
+
+	if (d11->type == T_MGMT) {
+		if (d11->subtype == ST_AUTH)
+			return process_auth_request(d11, data, left);
+
+		else if (d11->subtype == ST_ASSOC_REQ)
+			return process_assoc_request(d11, data, left);
+
+	} /* type check */
+
+	// XXX: TODO: recognize that our client successfully associated
+	else if (d11->type == T_DATA) {
+#ifdef DEBUG_DATA
+		printf("[*] Unhandled 802.11 packet ver:%u type:%s subtype:%s%s\n",
+				d11->version, dot11_types[d11->type],
+				dot11_subtypes[d11->type][d11->subtype],
+				(d11->subtype >> 3) ? " (QoS)" : "");
+		hexdump(data, left);
+#endif
+		return 1;
+	}
+
+	/* if we didn't handle this packet somehow, we should display it */
+#ifdef DEBUG_DOT11
+	printf("[*] Unhandled 802.11 packet ver:%u type:%s subtype:%s\n",
+			d11->version, dot11_types[d11->type],
+			dot11_subtypes[d11->type][d11->subtype]);
+	hexdump(data, left);
+#endif
+
+	return 1;
+}
+
+
+/*
+ * handle periodic tasks that need to be done
+ */
+int process_periodic_tasks(void)
+{
+	if (g_send_beacons) {
+		/* we didn't get a pcket yet, do periodic processing */
+		struct timespec now, diff;
+
+		if (clock_gettime(CLOCK_REALTIME, &now)) {
+			perror("[!] clock_gettime failed");
+			return 0;
+		}
+
+		/* see how long since the last beacon. if it's been long enough,
+		 * send another */
+		timespec_diff(&now, &last_beacon, &diff);
+		if (diff.tv_sec > 0 || diff.tv_nsec > BEACON_INTERVAL * 1000000) {
+#ifdef DEBUG_BEACON_INTERVAL
+			printf("%lu.%lu - %lu.%lu = %lu.%lu (vs %lu)\n",
+					(ulong)now.tv_sec, now.tv_nsec,
+					(ulong)last_beacon.tv_sec, last_beacon.tv_nsec,
+					(ulong)diff.tv_sec, diff.tv_nsec,
+					(ulong)BEACON_INTERVAL * 1000000);
+#endif
+			if (!send_beacon())
+				return 1; /* treat error as warning */
+			last_beacon = now;
+		}
+	} /* if (g_send_beacons) */
+
+	return 1;
 }
 
 
@@ -485,14 +464,14 @@ int main(int argc, char *argv[])
  *
  * on succes, we return 1, on failure, 0
  */
-int start_pcap(pcap_t **pcap, char *iface)
+int start_pcap(pcap_t **pcap)
 {
 	char errorstr[PCAP_ERRBUF_SIZE];
 	int datalink;
 
-	printf("[*] Starting capture on \"%s\" ...\n", iface);
+	printf("[*] Starting capture on \"%s\" ...\n", g_iface);
 
-	*pcap = pcap_open_live(iface, SNAPLEN, 8, 25, errorstr);
+	*pcap = pcap_open_live(g_iface, SNAPLEN, 8, 25, errorstr);
 	if (*pcap == (pcap_t *)NULL) {
 		fprintf(stderr, "[!] pcap_open_live() failed: %s\n", errorstr);
 		return 0;
@@ -505,7 +484,7 @@ int start_pcap(pcap_t **pcap, char *iface)
 
 		default:
 			fprintf(stderr, "[!] Unknown datalink for interface \"%s\": %d\n",
-					iface, datalink);
+					g_iface, datalink);
 			fprintf(stderr, "    Only RADIOTAP is currently supported.\n");
 			return 0;
 	}
@@ -517,7 +496,7 @@ int start_pcap(pcap_t **pcap, char *iface)
 /*
  * open a raw socket that we can use to send raw 802.11 frames
  */
-int open_raw_socket(char *iface)
+int open_raw_socket(void)
 {
 	int sock;
 	struct sockaddr_ll la;
@@ -536,7 +515,7 @@ int open_raw_socket(char *iface)
 
 	/* get the interface index */
 	memset(&ifr, 0, sizeof(ifr));
-	strncpy(ifr.ifr_name, iface, IFNAMSIZ);
+	strncpy(ifr.ifr_name, g_iface, IFNAMSIZ);
 	if (ioctl(sock, SIOCGIFINDEX, &ifr) < 0) {
 		perror("[!] Unable to get interface index");
 		close(sock);
@@ -636,6 +615,132 @@ dot11_frame_t *get_dot11_frame(const u_char **ppkt, u_int32_t *pleft)
 	*pleft -= sizeof(dot11_frame_t);
 
 	return (dot11_frame_t *)p;
+}
+
+
+/*
+ * process an 802.11 probe request
+ */
+int process_probe_request(dot11_frame_t *d11, const u_char *data, u_int32_t left)
+{
+	ie_t *ie;
+	char ssid_req[32] = { 0 };
+
+	if (!(ie = get_ssid_ie(data, left))) {
+		fprintf(stderr, "[-] Probe request with no SSID encountered!\n");
+		return 1; /* just a warning */
+	}
+
+	/* the ssid might be empty, or might be too long */
+	if (ie->len > 0)
+		strcpy(ssid_req, ssid_string(ie));
+
+	/* there are broadcast and unicast probe requests... */
+	if (!memcmp(d11->dst_mac, g_bssid, ETH_ALEN)) {
+		/* for us!? */
+#ifndef DONT_CHECK_SSID_ON_UNICAST
+		if (!strcmp(ssid_req, (char *)g_ssid)) {
+			printf("[*] (%s) Probe request for our BSSID and SSID, replying...\n", mac_string(d11->src_mac));
+			g_state = S_SENT_PROBE_RESP;
+			if (!send_probe_response(d11->src_mac))
+				return 1; /* treat send errors as a warning */
+		}
+#else
+		printf("[*] (%s) Probe request for our BSSID, replying...\n", mac_string(d11->src_mac));
+		g_state = S_SENT_PROBE_RESP;
+		if (!send_probe_response(d11->src_mac))
+			return 1; /* treat send errors as a warning */
+#endif
+	} else if (!memcmp(d11->dst_mac, IEEE80211_BROADCAST_ADDR, ETH_ALEN)) {
+		/* broadcast probe request - discovery? */
+		/* NOTE: this is the active-scan equivalent of a beacon -- no state change here */
+		if (ie && ie->len > 0) {
+			/* we must check the SSID on broadcast probes */
+			if (!strcmp(ssid_req, (char *)g_ssid)) {
+				printf("[*] (%s) Broadcast probe request for our SSID \"%s\" received, replying...\n", mac_string(d11->src_mac), ssid_req);
+				if (!send_probe_response(d11->src_mac))
+					return 1; /* treat send errors as a warning */
+			} else {
+				printf("[*] (%s) Broadcast probe request for \"%s\" received, NOT replying...\n", mac_string(d11->src_mac), ssid_req);
+			}
+		} else {
+			printf("[*] (%s) Broadcast probe request received, replying...\n", mac_string(d11->src_mac));
+			if (!send_probe_response(d11->src_mac))
+				return 1; /* treat send errors as a warning */
+		}
+	} /* mac check */
+	else {
+		if (ie->len > 0) {
+			printf("[*] (%s) Unhandled probe request for SSID (%u bytes): \"%s\"\n", mac_string(d11->src_mac), ie->len, ssid_req);
+		} else {
+			printf("[*] (%s) Unhandled probe request for empty SSID\n", mac_string(d11->src_mac));
+		}
+	}
+	return 1;
+}
+
+
+/*
+ * process an 802.11 authentication request
+ */
+int process_auth_request(dot11_frame_t *d11, const u_char *data, u_int32_t left)
+{
+	auth_t *auth;
+
+	if (left < sizeof(auth_t)) {
+		fprintf(stderr, "[-] (%s) Auth request without parameters!\n", mac_string(d11->src_mac));
+		return 1;
+	}
+
+	auth = (auth_t *)data;
+	if (auth->seq != 1) {
+		fprintf(stderr, "[-] Authentication sequence is not 0x0001 !!\n");
+	}
+
+	printf("[*] (%s) Auth request received (alg:0x%x, seq:%u, status:%u), replying...\n",
+			mac_string(d11->src_mac),
+			auth->algorithm, auth->seq, auth->status);
+
+	g_state = S_SENT_AUTH;
+	if (!send_auth_response(d11->src_mac))
+		return 1; /* treat send errors as a warning */
+
+	return 1;
+}
+
+
+/*
+ * process an 802.11 association request destined for us
+ */
+int process_assoc_request(dot11_frame_t *d11, const u_char *data, u_int32_t left)
+{
+	assoc_req_t *assoc;
+	ie_t *ie;
+
+	if (left < sizeof(assoc_req_t)) {
+		fprintf(stderr, "[-] (%s) Association request without parameters!\n", mac_string(d11->src_mac));
+		return 1;
+	}
+	assoc = (assoc_req_t *)data;
+
+	data += sizeof(assoc_req_t);
+	left -= sizeof(assoc_req_t);
+
+	if (!(ie = get_ssid_ie(data, left))) {
+		printf("[*] (%s) Association request without SSID received (caps:0x%x, interval: %u), replying...\n",
+				mac_string(d11->src_mac),
+				assoc->caps, assoc->interval);
+	} else {
+		printf("[*] (%s) Association request for \"%s\" received (caps:0x%x, interval: %u), replying...\n",
+				mac_string(d11->src_mac),
+				ssid_string(ie),
+				assoc->caps, assoc->interval);
+	}
+
+	g_state = S_SENT_ASSOC_RESP;
+	if (!send_assoc_response(d11->src_mac))
+		return 1; /* treat send errors as a warning */
+	return 1;
 }
 
 
@@ -924,6 +1029,21 @@ char *mac_string(u_int8_t *mac)
 	*p = '\0';
 
 	return mac_str;
+}
+
+
+/*
+ * return the ssid string, ensuring truncation and nul termination
+ */
+char *ssid_string(ie_t *ie)
+{
+	static char ssid_str[32];
+
+	if (ie->len > sizeof(ssid_str) - 1)
+		strncpy(ssid_str, (char *)ie->data, sizeof(ssid_str) - 1);
+	else
+		strncpy(ssid_str, (char *)ie->data, ie->len);
+	return ssid_str;
 }
 
 
