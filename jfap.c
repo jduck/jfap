@@ -169,6 +169,7 @@ u_int16_t get_sequence(void);
 
 int start_pcap(pcap_t **pcap);
 int open_raw_socket(void);
+int set_channel(void);
 
 int handle_packet(const u_char *data, u_int32_t left);
 int process_periodic_tasks(void);
@@ -291,6 +292,10 @@ int main(int argc, char *argv[])
 		return 1;
 
 	if ((g_sock = open_raw_socket()) == -1)
+		return 1;
+
+	/* set the channel for the wireless card */
+	if (!set_channel())
 		return 1;
 
 	while (1) {
@@ -556,6 +561,20 @@ int open_raw_socket(void)
 		return -1;
 	}
 	return sock;
+}
+
+
+/*
+ * set the channel of the wireless card
+ */
+int set_channel(void)
+{
+	char cmd[256] = { 0 };
+
+	snprintf(cmd, sizeof(cmd) - 1, "iwconfig %s channel %d", g_iface, g_channel);
+	if (system(cmd))
+		return 0;
+	return 1;
 }
 
 
