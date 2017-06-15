@@ -336,10 +336,6 @@ int main(int argc, char *argv[])
 				continue;
 			}
 
-			/* prepare further processing */
-			data = (const u_char *)(d11 + 1);
-			left -= sizeof(*d11);
-
 			/* if it's a probe request, see if it's for us */
 			if (d11->type == T_MGMT) {
 				if (d11->subtype == ST_BEACON) {
