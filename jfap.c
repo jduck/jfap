@@ -74,6 +74,8 @@ const char *dot11_subtypes[4][16] = {
 	{ "0?", "1?", "2?", "3?", "4?", "5?", "6?", "7?", "8?", "9?", "10?", "11?", "12?", "13?", "14?", "15?" }
 };
 
+int g_sock;
+
 u_int8_t g_bssid[ETH_ALEN];
 u_int8_t g_ssid[32];
 u_int8_t g_ssid_len;
@@ -160,10 +162,10 @@ int open_raw_socket(char *iface);
 int process_radiotap(const u_char **ppkt, u_int32_t *pleft);
 dot11_frame_t *get_dot11_frame(const u_char **ppkt, u_int32_t *pleft);
 
-int send_beacon(int sock);
-int send_probe_response(int sock, u_int8_t *dst_mac);
-int send_auth_response(int sock, u_int8_t *dst_mac);
-int send_assoc_response(int sock, u_int8_t *dst_mac);
+int send_beacon();
+int send_probe_response(u_int8_t *dst_mac);
+int send_auth_response(u_int8_t *dst_mac);
+int send_assoc_response(u_int8_t *dst_mac);
 
 
 void usage(char *argv0)
@@ -186,7 +188,7 @@ int main(int argc, char *argv[])
 {
 	char *argv0;
 	char iface[64] = { 0 };
-	int ret = 0, c, sock;
+	int ret = 0, c;
 	pcap_t *pch = NULL;
 
 	struct pcap_pkthdr *pchdr = NULL;
@@ -279,8 +281,8 @@ int main(int argc, char *argv[])
 	if (!start_pcap(&pch, iface))
 		return 1;
 
-	sock = open_raw_socket(iface);
-	if (sock == -1)
+	g_sock = open_raw_socket(iface);
+	if (g_sock == -1)
 		return 1;
 
 	while (1) {
@@ -324,7 +326,7 @@ int main(int argc, char *argv[])
 
 					if (diff.tv_sec > 0 || diff.tv_nsec > BEACON_INTERVAL * 100000) {
 						printf("[*] Re-transmitting...\n");
-						if (send(sock, g_pkt, g_pkt_len, 0) == -1) {
+						if (send(g_sock, g_pkt, g_pkt_len, 0) == -1) {
 							perror("[!] Unable to re-send packet!");
 							/* just try again later */
 						}
@@ -363,13 +365,13 @@ int main(int argc, char *argv[])
 						/* for us!? */
 						if (!strcmp(ssid_req, (char *)g_ssid)) {
 							printf("[*] (%s) Probe request for our BSSID and SSID, replying...\n", mac_string(d11->src_mac));
-							if (!send_probe_response(sock, d11->src_mac))
+							if (!send_probe_response(d11->src_mac))
 								continue;
 							g_state = S_SENT_PROBE_RESP;
 						}
 #else
 						printf("[*] (%s) Probe request for our BSSID, replying...\n", mac_string(d11->src_mac));
-						if (!send_probe_response(sock, d11->src_mac))
+						if (!send_probe_response(d11->src_mac))
 							continue;
 						g_state = S_SENT_PROBE_RESP;
 #endif
@@ -378,14 +380,14 @@ int main(int argc, char *argv[])
 						if (ie && ie->len > 0) {
 							if (!strcmp(ssid_req, (char *)g_ssid)) {
 								printf("[*] (%s) Broadcast probe request for our SSID \"%s\" received, replying...\n", mac_string(d11->src_mac), ssid_req);
-								if (!send_probe_response(sock, d11->src_mac))
+								if (!send_probe_response(d11->src_mac))
 									continue;
 							} else {
 								printf("[*] (%s) Broadcast probe request for \"%s\" received, NOT replying...\n", mac_string(d11->src_mac), ssid_req);
 							}
 						} else {
 							printf("[*] (%s) Broadcast probe request received, replying...\n", mac_string(d11->src_mac));
-							if (!send_probe_response(sock, d11->src_mac))
+							if (!send_probe_response(d11->src_mac))
 								continue;
 						}
 					} /* mac check */
@@ -400,7 +402,7 @@ int main(int argc, char *argv[])
 				} else if (d11->subtype == ST_AUTH) {
 					if (!memcmp(d11->dst_mac, g_bssid, ETH_ALEN)) {
 						printf("[*] (%s) Auth request received, replying...\n", mac_string(d11->src_mac));
-						if (!send_auth_response(sock, d11->src_mac))
+						if (!send_auth_response(d11->src_mac))
 							continue;
 						g_state = S_SENT_AUTH;
 					} else {
@@ -412,7 +414,7 @@ int main(int argc, char *argv[])
 				} else if (d11->subtype == ST_ASSOC_REQ) {
 					if (!memcmp(d11->dst_mac, g_bssid, ETH_ALEN)) {
 						printf("[*] (%s) Association request received, replying...\n", mac_string(d11->src_mac));
-						if (!send_assoc_response(sock, d11->src_mac))
+						if (!send_assoc_response(d11->src_mac))
 							continue;
 						g_state = S_SENT_ASSOC_RESP;
 					} else {
@@ -463,7 +465,7 @@ int main(int argc, char *argv[])
 							(ulong)diff.tv_sec, diff.tv_nsec,
 							(ulong)BEACON_INTERVAL * 1000000);
 #endif
-					if (!send_beacon(sock))
+					if (!send_beacon())
 						break;
 					last_beacon = now;
 				}
@@ -639,9 +641,9 @@ dot11_frame_t *get_dot11_frame(const u_char **ppkt, u_int32_t *pleft)
 /*
  * send an 802.11 packet with a bunch of re-transmissions for the fuck of it
  */
-int send_packet(int sock, dot11_frame_t *d11)
+int send_packet(dot11_frame_t *d11)
 {
-	if (send(sock, g_pkt, g_pkt_len, 0) == -1) {
+	if (send(g_sock, g_pkt, g_pkt_len, 0) == -1) {
 		perror("[!] Unable to send packet!");
 		return 0;
 	}
@@ -721,7 +723,7 @@ void fill_ie(u_int8_t **ppkt, u_int8_t id, u_int8_t *data, u_int8_t len)
 /*
  * send a beacon frame to announce our network
  */
-int send_beacon(int sock)
+int send_beacon()
 {
 	u_int8_t pkt[4096] = { 0 }, *p = pkt;
 	beacon_t *bc;
@@ -741,7 +743,7 @@ int send_beacon(int sock)
 	fill_ie(&p, IEID_DSPARAMS, &g_channel, 1);
 
 	/* don't retransmit beacons */
-	if (send(sock, pkt, p - pkt, 0) == -1) {
+	if (send(g_sock, pkt, p - pkt, 0) == -1) {
 		perror("[!] Unable to send beacon!");
 		return 0;
 	}
@@ -754,7 +756,7 @@ int send_beacon(int sock)
 /*
  * send a probe response to the specified sender
  */
-int send_probe_response(int sock, u_int8_t *dst_mac)
+int send_probe_response(u_int8_t *dst_mac)
 {
 	u_int8_t *p = g_pkt;
 	dot11_frame_t *d11;
@@ -776,7 +778,7 @@ int send_probe_response(int sock, u_int8_t *dst_mac)
 	fill_ie(&p, IEID_DSPARAMS, &g_channel, 1);
 
 	g_pkt_len = p - g_pkt;
-	if (!send_packet(sock, d11))
+	if (!send_packet(d11))
 		return 0;
 
 	//printf("[*] Sent probe response to %s!\n", mac_string(dst_mac));
@@ -787,7 +789,7 @@ int send_probe_response(int sock, u_int8_t *dst_mac)
 /*
  * send an authentication response
  */
-int send_auth_response(int sock, u_int8_t *dst_mac)
+int send_auth_response(u_int8_t *dst_mac)
 {
 	u_int8_t *p = g_pkt;
 	dot11_frame_t *d11;
@@ -805,7 +807,7 @@ int send_auth_response(int sock, u_int8_t *dst_mac)
 	p = (u_int8_t *)(auth + 1);
 
 	g_pkt_len = p - g_pkt;
-	if (!send_packet(sock, d11))
+	if (!send_packet(d11))
 		return 0;
 
 	//printf("[*] Sent auth response to %s!\n", mac_string(dst_mac));
@@ -816,7 +818,7 @@ int send_auth_response(int sock, u_int8_t *dst_mac)
 /*
  * send an association response
  */
-int send_assoc_response(int sock, u_int8_t *dst_mac)
+int send_assoc_response(u_int8_t *dst_mac)
 {
 	u_int8_t *p = g_pkt;
 	dot11_frame_t *d11;
@@ -836,7 +838,7 @@ int send_assoc_response(int sock, u_int8_t *dst_mac)
 	fill_ie(&p, IEID_RATES, (u_int8_t *)"\x0c\x12\x18\x24\x30\x48\x60\x6c", 8);
 
 	g_pkt_len = p - g_pkt;
-	if (!send_packet(sock, d11))
+	if (!send_packet(d11))
 		return 0;
 
 	//printf("[*] Sent association response to %s!\n", mac_string(dst_mac));
