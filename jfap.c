@@ -1062,6 +1062,7 @@ char *ssid_string(ie_t *ie)
 {
 	static char ssid_str[32];
 
+	memset(ssid_str, 0, sizeof(ssid_str));
 	if (ie->len > sizeof(ssid_str) - 1)
 		strncpy(ssid_str, (char *)ie->data, sizeof(ssid_str) - 1);
 	else
