@@ -406,11 +406,14 @@ int handle_packet(const u_char *data, u_int32_t left)
 	} /* type check */
 
 	else if (d11->type == T_DATA) {
-		g_state = S_ESTABLISHED;
-		g_pkt_len = 0;
+		if (g_state != S_ESTABLISHED) {
+			g_state = S_ESTABLISHED;
+			g_pkt_len = 0;
 #ifndef DEBUG_DATA
-		printf("[*] Station successfully associated and is sending data...\n");
-#else
+			printf("[*] Station successfully associated and is sending data...\n");
+#endif
+		}
+#ifdef DEBUG_DATA
 		printf("[*] Unhandled 802.11 packet ver:%u type:%s subtype:%s%s\n",
 				d11->version, dot11_types[d11->type],
 				dot11_subtypes[d11->type][d11->subtype],
